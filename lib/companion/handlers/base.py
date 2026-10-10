@@ -1,6 +1,6 @@
 """What every request kind implements."""
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from companion.contract import Request
 from companion.ledger import Entry
@@ -55,3 +55,8 @@ class Handler:
     def confirm(self, request: Request, entry: Entry, context: Context) -> bool:
         """Whether an applied request still holds; False re-applies it."""
         return True
+
+    def sweep(self, context: Context, entries: List[Entry]) -> int:
+        """At a service start: remove what this kind wrote that no ledger
+        entry names (a crash's leftovers). Returns how many were removed."""
+        return 0

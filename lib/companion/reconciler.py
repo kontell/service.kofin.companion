@@ -89,6 +89,8 @@ class Reconciler:
         report["busy"] = busy
         context = Context(document.namespace, document.device, gate)
         outcomes: Dict[str, Dict[str, str]] = {}
+        if trigger == "start" and not busy:
+            report["swept"] = self._sweep(context)
         self._withdraw_stale(document, context, busy, outcomes)
         for request in contract.list_requests(document):
             outcomes[request.id] = self._serve(request, context, busy)
@@ -102,6 +104,19 @@ class Reconciler:
         return report
 
     # -- the steps --------------------------------------------------------------
+
+    def _sweep(self, context: Context) -> Dict[str, int]:
+        """Each handler's leftovers from a crash, once per generation."""
+        swept: Dict[str, int] = {}
+        for kind, handler in self.handlers.items():
+            if schema.gate_refusal(context.gate, handler.needs) is not None:
+                continue
+            entries = [e for e in self.ledger.entries.values() if e.kind == kind]
+            try:
+                swept[kind] = handler.sweep(context, entries)
+            except Exception:
+                LOG.exception("sweep of %s failed", kind)
+        return swept
 
     def _withdraw_stale(
         self,

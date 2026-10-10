@@ -21,8 +21,11 @@ def profile(tmp_path, monkeypatch):
     (base / "addon_data" / "plugin.video.kofin" / "companion").mkdir(parents=True)
     (base / "addon_data" / "service.kofin.companion").mkdir(parents=True)
 
+    (base / "Thumbnails").mkdir()
+
     def translate(path):
         path = path.replace("special://database/", str(base / "Database") + "/")
+        path = path.replace("special://thumbnails/", str(base / "Thumbnails") + "/")
         path = path.replace("special://profile/", str(base) + "/")
         return path
 

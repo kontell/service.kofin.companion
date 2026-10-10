@@ -240,3 +240,20 @@ def test_context_reads_the_gated_version():
         "ns", "dev", {"video": {"version": 149, "ok": True, "reason": ""}}
     )
     assert context.version("video") == 149 and context.version("texture") == 0
+
+
+def test_a_start_sweeps_each_handlers_leftovers_once(rig):
+    _, handler, ledger, worker, publish, status, kodi, _ = rig
+    swept = []
+    handler.sweep = (
+        lambda context, entries: swept.append([e.kind for e in entries]) or 2
+    )
+    ledger.put("old", "fake", "h", {"rows": [1]})
+    publish([{"id": "old", "kind": "fake"}])
+    report = worker.run("start")
+    assert report["swept"] == {"fake": 2} and swept == [["fake"]]
+    report = worker.run("timer")
+    assert "swept" not in report and len(swept) == 1
+    kodi.scanning = True
+    report = worker.run("start")
+    assert "swept" not in report

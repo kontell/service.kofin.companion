@@ -5,11 +5,12 @@ kind it serves, the settings family that gates it and the databases it needs
 from typing import Dict
 
 from companion.handlers.base import Handler
+from companion.handlers.chapter_art import ChapterArt
 from companion.handlers.group_versions import GroupVersions
 
 
 def registry() -> Dict[str, Handler]:
     handlers: Dict[str, Handler] = {}
-    for handler in (GroupVersions(),):
+    for handler in (GroupVersions(), ChapterArt()):
         handlers[handler.kind] = handler
     return handlers
