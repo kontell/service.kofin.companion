@@ -10,7 +10,7 @@ from companion.handlers.base import Context, Refused
 from companion.handlers.metadata import EpisodeTags, RemoveSet, SeasonPlot, StreamFlags
 from companion.ledger import Entry
 from tests.unit import kodifixtures, videorows
-from tests.unit.videorows import BASE, LIB, NAMESPACE, query
+from tests.unit.videorows import LIB, NAMESPACE, query
 
 GATE = {"video": {"version": 149, "ok": True, "reason": ""}}
 CONTEXT = Context(NAMESPACE, "dev", GATE)
