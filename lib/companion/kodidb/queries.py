@@ -108,3 +108,80 @@ delete_file = """
 DELETE FROM files
 WHERE       idFile = ?
 """
+
+# -- the video metadata no public setter writes (plan C4) -------------------
+get_episode_file = """
+SELECT      episode.idFile, files.strFilename
+FROM        episode
+JOIN        files ON files.idFile = episode.idFile
+WHERE       episode.idEpisode = ?
+"""
+get_musicvideo_file = """
+SELECT      musicvideo.idFile, files.strFilename
+FROM        musicvideo
+JOIN        files ON files.idFile = musicvideo.idFile
+WHERE       musicvideo.idMVideo = ?
+"""
+get_tag = """
+SELECT      tag_id
+FROM        tag
+WHERE       name = ? COLLATE NOCASE
+"""
+add_tag = """
+INSERT INTO tag(name)
+VALUES      (?)
+"""
+link_tag = """
+INSERT OR REPLACE INTO tag_link(tag_id, media_id, media_type)
+VALUES      (?, ?, ?)
+"""
+unlink_tag = """
+DELETE FROM tag_link
+WHERE       tag_id = ?
+AND         media_id = ?
+AND         media_type = ?
+"""
+has_tag_link = """
+SELECT      COUNT(*)
+FROM        tag_link
+WHERE       tag_id = ?
+AND         media_id = ?
+AND         media_type = ?
+"""
+# A season's show, and the path that says whose the show is.
+get_season_show_path = """
+SELECT      seasons.idShow, path.strPath, seasons.plot
+FROM        seasons
+JOIN        tvshowlinkpath ON tvshowlinkpath.idShow = seasons.idShow
+JOIN        path ON path.idPath = tvshowlinkpath.idPath
+WHERE       seasons.idSeason = ?
+"""
+update_season_plot = """
+UPDATE      seasons
+SET         plot = ?
+WHERE       idSeason = ?
+"""
+get_stream_rows = """
+SELECT      rowid, iFlags
+FROM        streamdetails
+WHERE       idFile = ?
+AND         iStreamType = ?
+ORDER BY    rowid
+"""
+update_stream_flags = """
+UPDATE      streamdetails
+SET         iFlags = ?
+WHERE       rowid = ?
+"""
+# Kodi's own Clean: a set no movie links. Scoped to one title here.
+delete_empty_set = """
+DELETE FROM sets
+WHERE       strSet = ?
+AND         idSet NOT IN (SELECT idSet FROM movie WHERE idSet IS NOT NULL)
+"""
+count_empty_set = """
+SELECT      COUNT(*)
+FROM        sets
+WHERE       strSet = ?
+AND         idSet NOT IN (SELECT idSet FROM movie WHERE idSet IS NOT NULL)
+"""
