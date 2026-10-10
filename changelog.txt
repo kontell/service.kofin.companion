@@ -1,0 +1,2 @@
+v0.1.0
+- First release: the service, the schema gate, the request document reader, the ledger and the status report. No request kind is served yet.

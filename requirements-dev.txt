@@ -1,0 +1,7 @@
+Kodistubs==21.*
+pytest
+pytest-xdist
+mypy
+black
+ruff==0.6.9
+tox

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="service.kofin.companion" name="Kofin Companion" version="0.1.0" provider-name="kontell">
+  <requires>
+    <!-- Nothing else is declared on purpose: plugin.video.kofin is the same
+         add-on id for the SQL build (main), which writes these rows itself,
+         so the companion finds the API build through its capability report
+         at run time rather than through a dependency. -->
+    <import addon="xbmc.python" version="3.0.1"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py" start="login"/>
+  <!-- "Reconcile now" and "Show status" from the add-on's settings. -->
+  <extension point="xbmc.python.script" library="default.py"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Closes what Kodi's public interfaces cannot for Kofin's API build</summary>
+    <description lang="en_GB">Reads the requests Kofin's API build publishes and writes to Kodi's databases what no public interface can: a movie's versions grouped, the server's chapter images in the native chapters dialog, and the rest of the parity ledger. Optional: Kofin works without it and reports which gaps it leaves open.</description>
+    <platform>all</platform>
+    <license>GPL-3.0-only</license>
+    <source>https://github.com/kontell/service.kofin.companion</source>
+    <reuselanguageinvoker>false</reuselanguageinvoker>
+  </extension>
+</addon>
