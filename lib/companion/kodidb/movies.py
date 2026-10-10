@@ -122,3 +122,16 @@ class Movies:
     def movie_exists(self, movie_id):
         self.cursor.execute(QU.movie_exists, (movie_id,))
         return self.cursor.fetchone()[0] == 1
+
+    # -- assets (versions and extras) of a grouped movie ---------------------
+
+    def assets_of(self, movie_id, own_file_id):
+        """[(idFile, strFilename, itemType, idType)] of the movie's version
+        files and extras, its own file left out."""
+        self.cursor.execute(QU.get_assets_of_movie, (movie_id, own_file_id))
+        return self.cursor.fetchall()
+
+    def delete_file(self, file_id):
+        """Drop the files row; Kodi's delete_file trigger cascades the
+        videoversion, bookmark, settings, streamdetails and art rows."""
+        self.cursor.execute(QU.delete_file, (file_id,))

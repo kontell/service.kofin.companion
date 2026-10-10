@@ -93,3 +93,18 @@ SELECT      COUNT(*)
 FROM        movie
 WHERE       idMovie = ?
 """
+# A movie's asset rows beside its own file: version files and extras, with
+# the type each is filed under.
+get_assets_of_movie = """
+SELECT      videoversion.idFile, files.strFilename, videoversion.itemType,
+            videoversion.idType
+FROM        videoversion
+JOIN        files ON files.idFile = videoversion.idFile
+WHERE       videoversion.idMedia = ?
+AND         videoversion.media_type = 'movie'
+AND         videoversion.idFile != ?
+"""
+delete_file = """
+DELETE FROM files
+WHERE       idFile = ?
+"""
