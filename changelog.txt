@@ -1,2 +1,3 @@
 v0.1.0
-- First release: the service, the schema gate, the request document reader, the ledger and the status report. No request kind is served yet.
+- First release: the service, the schema gate (MyVideos 149, MyMusic 84, Textures 14), the request document reader, the ledger and the status report.
+- Request kinds served: group_versions, retire_assets, chapter_art, episode_tags, season_plot, stream_flags, remove_set.

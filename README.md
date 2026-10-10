@@ -8,6 +8,20 @@ It is allowed what an official-repository add-on is not, direct access to Kodi's
 
 The plan it is built to is `docs/companion-addon-plan.md` in the Kofin repository.
 
+## What it serves
+
+| Request kind | What it writes | Ledger row |
+|---|---|---|
+| `group_versions` | A movie's version files Kodi imported as movies of their own, grouped under the owner the way the Versions Manager does | S24 |
+| `retire_assets` | A movie's version files and extras kept to exactly the server's: dropped ones removed, renamed sources retyped | S25 |
+| `chapter_art` | The server's chapter images under the keys the chapters dialog asks for, while a Kofin item plays | S35, A03 |
+| `episode_tags` | The favourite tag on an episode, undone when the episode stops being one | S14 |
+| `season_plot` | A season's plot after its import, which Kodi sets only on insert | S18 |
+| `stream_flags` | The default, forced and hearing-impaired bits on a file's stream rows | S09 |
+| `remove_set` | The row of a set Kofin emptied, by title, without a clean of the whole root | S23 |
+
+Every write is to a row Kofin owns, read back before the write; nothing is written while a scan runs; a withdrawn request is undone where the write was per play or per state and stands where it edited Kodi's own row. The status document under the add-on's profile data says what was done, what waits and what was refused, and why.
+
 ## Development
 
 ```bash
