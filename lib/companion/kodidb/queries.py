@@ -1,0 +1,231 @@
+"""The statements, named as Kofin's ``sync/kodidb/queries.py`` names them."""
+
+get_version = """
+SELECT      idVersion
+FROM        version
+"""
+get_videoversion_itemtype = """
+SELECT itemType FROM videoversiontype WHERE id = ?
+"""
+check_video_version = """
+SELECT COUNT(name) FROM sqlite_master WHERE type='table' AND name='videoversion'
+"""
+get_videoversiontype_by_name = """
+SELECT      id
+FROM        videoversiontype
+WHERE       name = ? COLLATE NOCASE
+AND         itemType = ?
+"""
+add_videoversiontype = """
+INSERT INTO videoversiontype(id, name, owner, itemType)
+VALUES      (NULL, ?, ?, ?)
+"""
+# Kodi's own statement from its v128 migration (CVideoDatabase::UpdateTables),
+# which removed unused user-defined version types for the same reason this
+# runs: the version picker lists every USER row, referenced or not.
+delete_orphan_videoversiontypes = """
+DELETE FROM videoversiontype
+WHERE       id NOT IN (SELECT idType FROM videoversion)
+AND         owner = ?
+AND         itemType = ?
+"""
+update_video_version = """
+UPDATE      videoversion
+SET         idType = ?, itemType = ?
+WHERE       idFile = ?
+"""
+# Kodi's UpdateAssetsOwner: every asset of the source movie moves to the
+# target, the source's own file among them.
+move_assets = """
+UPDATE      videoversion
+SET         idMedia = ?
+WHERE       idMedia = ?
+AND         media_type = 'movie'
+"""
+get_movie_file = """
+SELECT      movie.idFile, files.strFilename, path.strPath, path.idPath
+FROM        movie
+JOIN        files ON files.idFile = movie.idFile
+JOIN        path ON path.idPath = files.idPath
+WHERE       movie.idMovie = ?
+"""
+get_file = """
+SELECT      files.strFilename, path.strPath
+FROM        files
+JOIN        path ON path.idPath = files.idPath
+WHERE       files.idFile = ?
+"""
+get_art = """
+SELECT      type, url
+FROM        art
+WHERE       media_id = ?
+AND         media_type = ?
+"""
+get_art_id = """
+SELECT      art_id
+FROM        art
+WHERE       media_id = ?
+AND         media_type = ?
+AND         type = ?
+"""
+add_art = """
+INSERT INTO art(media_id, media_type, type, url)
+VALUES      (?, ?, ?, ?)
+"""
+update_art_url = """
+UPDATE      art
+SET         url = ?
+WHERE       art_id = ?
+"""
+delete_movie = """
+DELETE FROM movie
+WHERE       idMovie = ?
+"""
+count_versions_of = """
+SELECT      COUNT(*)
+FROM        videoversion
+WHERE       idMedia = ?
+AND         media_type = 'movie'
+AND         idFile = ?
+"""
+get_file_ids_by_filename = """
+SELECT      idFile
+FROM        files
+WHERE       strFilename = ?
+"""
+get_version_row = """
+SELECT      idMedia, media_type, idType
+FROM        videoversion
+WHERE       idFile = ?
+"""
+attach_version = """
+UPDATE      videoversion
+SET         idMedia = ?, media_type = 'movie', itemType = ?, idType = ?
+WHERE       idFile = ?
+"""
+add_video_version = """
+INSERT INTO videoversion(idFile, idMedia, media_type, itemType, idType)
+VALUES      (?, ?, 'movie', ?, ?)
+"""
+movie_exists = """
+SELECT      COUNT(*)
+FROM        movie
+WHERE       idMovie = ?
+"""
+# A movie's asset rows beside its own file: version files and extras, with
+# the type each is filed under.
+get_assets_of_movie = """
+SELECT      videoversion.idFile, files.strFilename, videoversion.itemType,
+            videoversion.idType, path.strPath
+FROM        videoversion
+JOIN        files ON files.idFile = videoversion.idFile
+JOIN        path ON path.idPath = files.idPath
+WHERE       videoversion.idMedia = ?
+AND         videoversion.media_type = 'movie'
+ORDER BY    videoversion.idFile
+"""
+# Kodi's SetDefaultVideoVersion, its three statements: the movie's file and
+# base path (c22, VIDEODB_ID_BASEPATH), then the art swap -- the movie's art
+# becomes the art of the file that was the default, as a version, and the
+# new default's version art becomes the movie's.
+set_default_file = """
+UPDATE      movie
+SET         idFile = ?, c22 = ?
+WHERE       idMovie = ?
+"""
+movie_art_to_version = """
+UPDATE      art
+SET         media_type = 'videoversion', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'movie'
+"""
+version_art_to_movie = """
+UPDATE      art
+SET         media_type = 'movie', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'videoversion'
+"""
+delete_file = """
+DELETE FROM files
+WHERE       idFile = ?
+"""
+
+# -- the video metadata no public setter writes (plan C4) -------------------
+get_episode_file = """
+SELECT      episode.idFile, files.strFilename
+FROM        episode
+JOIN        files ON files.idFile = episode.idFile
+WHERE       episode.idEpisode = ?
+"""
+get_musicvideo_file = """
+SELECT      musicvideo.idFile, files.strFilename
+FROM        musicvideo
+JOIN        files ON files.idFile = musicvideo.idFile
+WHERE       musicvideo.idMVideo = ?
+"""
+get_tag = """
+SELECT      tag_id
+FROM        tag
+WHERE       name = ? COLLATE NOCASE
+"""
+add_tag = """
+INSERT INTO tag(name)
+VALUES      (?)
+"""
+link_tag = """
+INSERT OR REPLACE INTO tag_link(tag_id, media_id, media_type)
+VALUES      (?, ?, ?)
+"""
+unlink_tag = """
+DELETE FROM tag_link
+WHERE       tag_id = ?
+AND         media_id = ?
+AND         media_type = ?
+"""
+has_tag_link = """
+SELECT      COUNT(*)
+FROM        tag_link
+WHERE       tag_id = ?
+AND         media_id = ?
+AND         media_type = ?
+"""
+# A season's show, and the path that says whose the show is.
+# One row per path the season's show is linked to: Kodi merges shows that
+# share a title and a premiere onto one row, so a show can have several.
+get_season_show_paths = """
+SELECT      seasons.idShow, path.strPath, seasons.plot
+FROM        seasons
+LEFT JOIN   tvshowlinkpath ON tvshowlinkpath.idShow = seasons.idShow
+LEFT JOIN   path ON path.idPath = tvshowlinkpath.idPath
+WHERE       seasons.idSeason = ?
+ORDER BY    path.idPath
+"""
+update_season_plot = """
+UPDATE      seasons
+SET         plot = ?
+WHERE       idSeason = ?
+"""
+get_stream_rows = """
+SELECT      rowid, iFlags, iSource
+FROM        streamdetails
+WHERE       idFile = ?
+AND         iStreamType = ?
+ORDER BY    rowid
+"""
+update_stream_flags = """
+UPDATE      streamdetails
+SET         iFlags = ?, iSource = ?
+WHERE       rowid = ?
+"""
+# Kodi's own Clean: a set no movie links. Scoped to one title here.
+delete_empty_set = """
+DELETE FROM sets
+WHERE       strSet = ?
+AND         idSet NOT IN (SELECT idSet FROM movie WHERE idSet IS NOT NULL)
+"""
+count_empty_set = """
+SELECT      COUNT(*)
+FROM        sets
+WHERE       strSet = ?
+AND         idSet NOT IN (SELECT idSet FROM movie WHERE idSet IS NOT NULL)
+"""

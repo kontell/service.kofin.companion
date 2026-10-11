@@ -1,0 +1,108 @@
+# Kodi Media Center language file
+# Addon Name: Kofin Companion
+# Addon id: service.kofin.companion
+# Addon Provider: kontell
+msgid ""
+msgstr ""
+"Project-Id-Version: service.kofin.companion\n"
+"Report-Msgid-Bugs-To: \n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: \n"
+"Language-Team: English\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en_GB\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "Addon Summary"
+msgid "Closes what Kodi's public interfaces cannot for Kofin's API build"
+msgstr ""
+
+msgctxt "Addon Description"
+msgid "Reads the requests Kofin's API build publishes and writes to Kodi's databases what no public interface can: a movie's versions grouped, the server's chapter images in the native chapters dialog, and the rest of the parity ledger. Optional: Kofin works without it and reports which gaps it leaves open."
+msgstr ""
+
+# 30000-30009 — categories and groups
+
+msgctxt "#30000"
+msgid "General"
+msgstr ""
+
+msgctxt "#30001"
+msgid "Which of Kofin's requests the companion serves, and the actions."
+msgstr ""
+
+msgctxt "#30002"
+msgid "Requests served"
+msgstr ""
+
+msgctxt "#30003"
+msgid "Actions"
+msgstr ""
+
+# 30010-30019 — request families
+
+msgctxt "#30010"
+msgid "Group a movie's versions"
+msgstr ""
+
+msgctxt "#30011"
+msgid "A movie whose version files Kodi imported as movies of their own is grouped under one title, with the server's default version as Kodi's."
+msgstr ""
+
+msgctxt "#30012"
+msgid "Chapter images"
+msgstr ""
+
+msgctxt "#30013"
+msgid "The server's chapter images are shown in Kodi's chapters dialog while a Kofin item plays."
+msgstr ""
+
+msgctxt "#30014"
+msgid "Renamed or removed versions and extras"
+msgstr ""
+
+msgctxt "#30015"
+msgid "A version or extra the server renamed, removed or dropped is renamed or removed in Kodi at once instead of waiting for Clean library."
+msgstr ""
+
+msgctxt "#30016"
+msgid "Episode favourites, season plots, sets and stream flags"
+msgstr ""
+
+msgctxt "#30017"
+msgid "The video metadata Kodi's public interfaces cannot write: the episode favourite tag, a season's plot, an emptied set's removal and exact stream flags."
+msgstr ""
+
+# 30020-30029 — actions
+
+msgctxt "#30020"
+msgid "Reconcile now"
+msgstr ""
+
+msgctxt "#30021"
+msgid "Read Kofin's requests again and apply them. The service does this by itself whenever Kofin publishes; this is for checking."
+msgstr ""
+
+msgctxt "#30022"
+msgid "Show status"
+msgstr ""
+
+msgctxt "#30023"
+msgid "The last reconcile: the databases found, the requests served, and every refusal with its reason."
+msgstr ""
+
+# 30030-30039 — messages
+
+msgctxt "#30030"
+msgid "Reconcile requested"
+msgstr ""
+
+msgctxt "#30031"
+msgid "No status yet: the service has not run."
+msgstr ""
+
+msgctxt "#30032"
+msgid "Kofin Companion status"
+msgstr ""
