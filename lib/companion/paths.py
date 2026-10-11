@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 BASE = "plugin://plugin.video.kofin/native/"
 PARAM_MEDIA_SOURCE = "mediasourceid"
+# The directory, below a movie's own, its extras are listed in.
+EXTRAS = "extras/"
 
 
 def root(namespace: str) -> str:
@@ -40,3 +42,8 @@ def without_source(url: Optional[str]) -> str:
 
 def is_version_url(url: Optional[str]) -> bool:
     return PARAM_MEDIA_SOURCE in parse_qs(urlsplit(url or "").query)
+
+
+def is_extra_url(url: Optional[str]) -> bool:
+    """Whether a URL is a file in a movie's extras directory."""
+    return ("/" + EXTRAS) in urlsplit(url or "").path

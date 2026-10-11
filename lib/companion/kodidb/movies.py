@@ -9,13 +9,6 @@ from companion.log import Logger
 LOG = Logger(__name__)
 
 
-def _file_stem(path):
-    """The file name without its extension, for either path separator --
-    Jellyfin reports the server's own path, which may be a Windows one."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    return name.rsplit(".", 1)[0] if "." in name else name
-
-
 class Movies:
     """Version types and the grouping statements, on one cursor."""
 
@@ -44,23 +37,22 @@ class Movies:
         )
         return self.cursor.lastrowid
 
-    def resolve_version_type(self, name, path=None):
-        """Map ``MediaSource.Name`` to a VERSION ``videoversiontype`` id.
+    def resolve_version_type(self, name):
+        """Map a version's name to a VERSION ``videoversiontype`` id.
 
-        Empty / ``Standard Edition`` -> the seeded Standard Edition (40400).
-        A name equal to the source file's own stem is Jellyfin's default for
-        a film with no other versions (``Video.GetMediaSourceName`` returns
-        the file name without extension unless local alternate versions
-        exist, in which case the folder-name prefix is stripped and a
-        suffix label remains) -- that is no label at all, and it maps to the
-        Standard Edition too. Otherwise find-or-create under VERSION itemType
-        (builtins first). Kofin's audit finding A4-1 is why: a type row per
-        single-file movie put 1,799 entries in the Versions picker.
+        Empty or ``Standard Edition`` is the seeded Standard Edition
+        (40400); anything else is found or created under the VERSION
+        itemType, Kodi's builtins first.
+
+        Kofin's rule that a name equal to the source file's stem is no label
+        (its audit finding A4-1: a type row per single-file movie put 1,799
+        entries in the Versions picker) is applied before the request is
+        published: ``metadata.version_label`` compares the name with
+        ``MediaSource.Path`` and sends an empty one. It cannot be applied
+        here, where the only file name at hand is a plugin URL.
         """
         name = (name or "").strip()
         if not name or name.lower() == "standard edition":
-            return schema.STANDARD_EDITION
-        if path and name.lower() == _file_stem(path).lower():
             return schema.STANDARD_EDITION
         return self.get_extra_type_id(name, self.itemtype)
 
@@ -115,6 +107,27 @@ class Movies:
     def set_version(self, file_id, type_id):
         self.cursor.execute(QU.update_video_version, (type_id, self.itemtype, file_id))
 
+    def file_ids(self, filename):
+        """The files rows stored under a URL: a plugin row keeps its whole
+        URL in ``strFilename``."""
+        self.cursor.execute(QU.get_file_ids_by_filename, (filename,))
+        return [row[0] for row in self.cursor.fetchall()]
+
+    def version_row(self, file_id):
+        """(idMedia, media_type, idType) of a file's asset row, or None."""
+        self.cursor.execute(QU.get_version_row, (file_id,))
+        return self.cursor.fetchone()
+
+    def attach_version(self, file_id, movie_id, type_id):
+        """Make a file a version of a movie, whatever its asset row said."""
+        self.cursor.execute(
+            QU.attach_version, (movie_id, self.itemtype, type_id, file_id)
+        )
+        if not self.cursor.rowcount:
+            self.cursor.execute(
+                QU.add_video_version, (file_id, movie_id, self.itemtype, type_id)
+            )
+
     def is_version_of(self, file_id, movie_id):
         self.cursor.execute(QU.count_versions_of, (movie_id, file_id))
         return self.cursor.fetchone()[0] == 1
@@ -125,11 +138,19 @@ class Movies:
 
     # -- assets (versions and extras) of a grouped movie ---------------------
 
-    def assets_of(self, movie_id, own_file_id):
-        """[(idFile, strFilename, itemType, idType)] of the movie's version
-        files and extras, its own file left out."""
-        self.cursor.execute(QU.get_assets_of_movie, (movie_id, own_file_id))
+    def assets_of(self, movie_id):
+        """[(idFile, strFilename, itemType, idType, strPath)] of every asset
+        row of the movie: its version files, its extras, and its own file,
+        whichever of them is the default at the moment."""
+        self.cursor.execute(QU.get_assets_of_movie, (movie_id,))
         return self.cursor.fetchall()
+
+    def set_default_file(self, movie_id, old_file_id, file_id, base_path):
+        """Kodi's SetDefaultVideoVersion, statement for statement: the
+        movie plays ``file_id``, and the art changes hands with it."""
+        self.cursor.execute(QU.set_default_file, (file_id, base_path, movie_id))
+        self.cursor.execute(QU.movie_art_to_version, (old_file_id, movie_id))
+        self.cursor.execute(QU.version_art_to_movie, (movie_id, file_id))
 
     def delete_file(self, file_id):
         """Drop the files row; Kodi's delete_file trigger cascades the
