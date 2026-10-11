@@ -16,6 +16,10 @@ A file in ``Thumbnails/`` without its row is invisible to all of that: the
 sweep finds files through rows. So every chapter is read before anything
 is copied, the rows go in one short transaction after the files exist,
 and a call that does not commit takes the files it copied with it.
+
+Kodi names a cache file by the CRC of the lower-cased key, so two keys
+that differ by case alone are two rows and one file. A file is therefore
+removed only when no row names it any more.
 """
 
 import os
@@ -26,7 +30,13 @@ from companion import kodi, schema
 from companion.contract import Request
 from companion.db import Database
 from companion.handlers.base import Context, Handler, Refused
-from companion.kodidb.texture import TextureCache, cached_rel_path, chapter_art_key
+from companion.kodidb.texture import (
+    TextureCache,
+    cached_rel_path,
+    chapter_art_key,
+    dynpath_device,
+    key_dynpath,
+)
 from companion.ledger import Entry
 from companion.log import Logger
 
@@ -49,7 +59,7 @@ class ChapterArt(Handler):
         chapters = request.fields.get("chapters") or []
         if not dynpath or not isinstance(chapters, list) or not chapters:
             raise Refused("no chapters")
-        if not context.device or ("deviceId=" + context.device) not in dynpath:
+        if not context.device or dynpath_device(dynpath) != context.device:
             raise Refused("not owned: the stream is not this device's")
         wrapped = schema.CHAPTER_ART_WRAPPED.get(context.version("texture"))
         if wrapped is None:
@@ -112,7 +122,8 @@ class ChapterArt(Handler):
             cache = TextureCache(db.cursor)
             for key, rel in keys:
                 cache.remove(key)
-                _remove_file(os.path.join(directory, rel))
+                if not cache.references(rel):
+                    _remove_file(os.path.join(directory, rel))
         LOG.info(
             "chapter art %s: %d tile(s) removed", entry.data.get("item"), len(keys)
         )
@@ -137,16 +148,30 @@ class ChapterArt(Handler):
         known = {
             key for entry in entries for key, _rel in (entry.data.get("keys") or [])
         }
+        device = context.device
+
+        def ours(url: str) -> bool:
+            # The device id as a whole value of the key's own stream URL: a
+            # LIKE on it would take tv-10's rows for tv-1, and read a "%" or
+            # "_" in an id as a wildcard.
+            return dynpath_device(key_dynpath(url)) == device
+
         removed: List[Tuple[str, str]] = []
         with Database("texture") as db:
             cache = TextureCache(db.cursor)
-            for pattern in (
-                "chapter://%%%s%%" % context.device,
-                "image://video@%%%s%%" % context.device,
-            ):
-                removed.extend(cache.remove_like(pattern, keep=known))
+            for pattern in ("chapter://%", "image://video@%"):
+                removed.extend(cache.remove_like(pattern, keep=known, only=ours))
+            # A file a kept row still names stays (keys that differ by case
+            # alone share one).
+            orphaned = sorted(
+                {
+                    cachedurl
+                    for _url, cachedurl in removed
+                    if not cache.references(cachedurl)
+                }
+            )
         directory = thumbnails_dir()
-        for _url, cachedurl in removed:
+        for cachedurl in orphaned:
             _remove_file(os.path.join(directory, cachedurl))
         if removed:
             LOG.info("swept %d stale chapter tile(s)", len(removed))

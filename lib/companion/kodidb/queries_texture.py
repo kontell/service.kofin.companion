@@ -28,3 +28,10 @@ delete_cache = """
 DELETE FROM     texture
 WHERE           url = ?
 """
+
+
+count_cachedurl = """
+SELECT      COUNT(*)
+FROM        texture
+WHERE       cachedurl = ?
+"""
