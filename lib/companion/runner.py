@@ -49,11 +49,11 @@ class Monitor(xbmc.Monitor):
 
 
 def build(handlers: Optional[Dict[str, Any]] = None) -> reconciler.Reconciler:
-    ledger = Ledger(kodi.translate(contract.LEDGER_PATH))
-    ledger.load()
+    # The reconciler reads the ledger at its first run, and again at each
+    # run for as long as it cannot be read.
     return reconciler.Reconciler(
         handlers if handlers is not None else registry(),
-        ledger,
+        Ledger(kodi.translate(contract.LEDGER_PATH)),
         kodi.translate(contract.REQUESTS_PATH),
         kodi.translate(contract.CAPABILITIES_PATH),
         kodi.translate(contract.STATUS_PATH),
@@ -66,6 +66,9 @@ def run() -> None:
     worker = build()
     trigger = "start"
     while not monitor.abortRequested():
+        # Cleared before the run, not after it: a ping that arrives while
+        # the reconcile is running is for a document it may not have read.
+        monitor.wake.clear()
         try:
             report = worker.run(trigger)
         except Exception:
@@ -73,7 +76,6 @@ def run() -> None:
             report = {}
         delay = RETRY_SECONDS if reconciler.waiting(report) else POLL_SECONDS
         waited = 0.0
-        monitor.wake.clear()
         while waited < delay and not monitor.wake.is_set():
             if monitor.waitForAbort(1.0):
                 LOG.info("---<<< companion")

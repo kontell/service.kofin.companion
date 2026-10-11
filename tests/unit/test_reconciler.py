@@ -20,6 +20,7 @@ class FakeHandler(Handler):
         self.withdrawn = []
         self.holds = True
         self.fail = None
+        self.withdraw_fail = None
 
     def apply(self, request, context):
         if self.fail is not None:
@@ -30,6 +31,8 @@ class FakeHandler(Handler):
         return {"rows": [1, 2]}
 
     def withdraw(self, entry, context):
+        if self.withdraw_fail is not None:
+            raise self.withdraw_fail
         self.withdrawn.append(entry.data)
 
     def confirm(self, request, entry, context):
@@ -111,14 +114,60 @@ def test_a_changed_request_is_applied_again_and_a_withdrawn_one_undone(rig):
     _, handler, ledger, worker, publish, status, _, _ = rig
     publish([{"id": "r1", "kind": "fake", "x": 1}])
     worker.run("ping")
+    first = ledger.get("r1").hash
     publish([{"id": "r1", "kind": "fake", "x": 2}], generation=2)
     worker.run("ping")
     assert [a[1]["x"] for a in handler.applied] == [1, 2]
+    # What the request's earlier form wrote was undone before the new form
+    # was written: the entry that replaced it no longer lists those rows.
+    assert handler.withdrawn == [{"rows": [1, 2]}]
+    assert ledger.get("r1").hash != first
     publish([], generation=3)
     report = worker.run("ping")
-    assert handler.withdrawn == [{"rows": [1, 2]}]
+    assert handler.withdrawn == [{"rows": [1, 2]}, {"rows": [1, 2]}]
     assert ledger.entries == {} and report["requests"] == {}
     assert status()["generation"] == 3
+
+
+def test_a_changed_request_keeps_its_entry_until_the_old_form_is_undone(rig):
+    _, handler, ledger, worker, publish, _, _, _ = rig
+    publish([{"id": "r1", "kind": "fake", "x": 1}])
+    worker.run("ping")
+    first = ledger.get("r1").hash
+    publish([{"id": "r1", "kind": "fake", "x": 2}], generation=2)
+    handler.withdraw_fail = RuntimeError("locked")
+    report = worker.run("ping")
+    assert report["requests"]["r1"]["state"] == "waiting"
+    assert report["requests"]["r1"]["reason"] == "withdrawal failed"
+    assert report["requests"]["r1"]["hash"] != first
+    # Not applied over rows nothing would then remember.
+    assert [a[1]["x"] for a in handler.applied] == [1]
+    assert ledger.get("r1").hash == first
+    handler.withdraw_fail = None
+    report = worker.run("timer")
+    assert report["requests"]["r1"]["state"] == "done"
+    assert [a[1]["x"] for a in handler.applied] == [1, 2]
+
+
+def test_a_refusal_undoes_what_the_request_wrote_before(rig):
+    """Applied, then no longer holding, then refused: the earlier write is
+    withdrawn before its record goes, and the record stays while that
+    withdrawal cannot be made."""
+    _, handler, ledger, worker, publish, _, _, _ = rig
+    publish([{"id": "f1", "kind": "fake"}])
+    worker.run("ping")
+    handler.holds = False
+    handler.fail = Refused("owner row is gone")
+    handler.withdraw_fail = Retry("locked")
+    report = worker.run("timer")
+    assert report["requests"]["f1"]["state"] == "waiting"
+    assert report["requests"]["f1"]["reason"] == "locked"
+    assert ledger.get("f1") is not None and handler.withdrawn == []
+    handler.withdraw_fail = None
+    report = worker.run("timer")
+    assert report["requests"]["f1"]["state"] == "refused"
+    assert report["requests"]["f1"]["reason"] == "owner row is gone"
+    assert handler.withdrawn == [{"rows": [1, 2]}] and ledger.get("f1") is None
 
 
 def test_refusals_name_their_reason(rig):
@@ -182,6 +231,52 @@ def test_a_scan_defers_writes_but_not_confirmations(rig):
     assert handler.withdrawn == [{"rows": [1, 2]}]
 
 
+def test_the_gate_is_asked_before_a_withdrawal(rig, profile):
+    """A database this build does not serve cannot be opened to withdraw
+    from either. That is a refusal with the gate's reason, the entry kept,
+    and no thirty-second retry for something only a new build clears."""
+    _, handler, ledger, worker, publish, _, _, _ = rig
+    publish([{"id": "f1", "kind": "fake"}])
+    worker.run("ping")
+    (profile / "Database" / "MyVideos149.db").unlink()
+    (profile / "Database" / "MyVideos150.db").write_bytes(b"")
+    publish([], generation=2)
+    report = worker.run("ping")
+    assert report["requests"]["f1"]["state"] == "refused"
+    assert (
+        report["requests"]["f1"]["reason"]
+        == "withdrawal: gate: MyVideos v150 is not served"
+    )
+    assert handler.withdrawn == [] and ledger.get("f1") is not None
+    assert not reconciler.waiting(report)
+    # Discovery is fresh at each run: no restart was needed to see v150.
+    assert report["gate"]["video"]["version"] == 150
+
+
+def test_an_unreadable_ledger_stops_the_reconcile_and_is_not_saved_over(rig, profile):
+    _, handler, ledger, worker, publish, status, _, _ = rig
+    publish([{"id": "f1", "kind": "fake"}])
+    worker.run("ping")
+    written = profile / "addon_data" / "service.kofin.companion" / "written.json"
+    good = written.read_text(encoding="utf-8")
+    written.write_text(good[: len(good) // 2], encoding="utf-8")
+    truncated = written.read_text(encoding="utf-8")
+    fresh = Ledger(str(written))
+    worker.ledger = fresh
+    publish([{"id": "f1", "kind": "fake"}, {"id": "f2", "kind": "fake"}], generation=2)
+    report = worker.run("timer")
+    assert report["idle"].startswith("unreadable ledger")
+    assert status()["idle"] == report["idle"]
+    assert len(handler.applied) == 1 and handler.withdrawn == []
+    assert written.read_text(encoding="utf-8") == truncated
+    # Read again at the next run, and carried on from once it can be.
+    written.write_text(good, encoding="utf-8")
+    report = worker.run("timer")
+    assert report["requests"]["f1"]["state"] == "done"
+    assert report["requests"]["f2"]["state"] == "done"
+    assert len(handler.applied) == 2 and fresh.get("f1") is not None
+
+
 def test_a_retry_and_a_failure_are_waiting_not_refused(rig):
     _, handler, ledger, worker, publish, _, _, _ = rig
     publish([{"id": "f1", "kind": "fake"}])
@@ -242,18 +337,31 @@ def test_context_reads_the_gated_version():
     assert context.version("video") == 149 and context.version("texture") == 0
 
 
-def test_a_start_sweeps_each_handlers_leftovers_once(rig):
-    _, handler, ledger, worker, publish, status, kodi, _ = rig
+def test_leftovers_are_swept_once_at_the_first_wake_that_names_a_device(rig):
+    """Once per process, whatever woke it and whether or not a scan runs: a
+    sweep cleans by the document's device id, so it waits for a document
+    that has one, and a sweep that failed is tried again."""
+    _, handler, ledger, worker, publish, status, kodi, kofin = rig
     swept = []
-    handler.sweep = (
-        lambda context, entries: swept.append([e.kind for e in entries]) or 2
-    )
+
+    def sweep(context, entries):
+        swept.append((context.device, [e.kind for e in entries]))
+        if len(swept) == 1:
+            raise RuntimeError("locked")
+        return 2
+
+    handler.sweep = sweep
+    # No document yet: nothing to key a sweep by.
+    report = worker.run("start")
+    assert "swept" not in report and swept == []
     ledger.put("old", "fake", "h", {"rows": [1]})
     publish([{"id": "old", "kind": "fake"}])
-    report = worker.run("start")
-    assert report["swept"] == {"fake": 2} and swept == [["fake"]]
-    report = worker.run("timer")
-    assert "swept" not in report and len(swept) == 1
     kodi.scanning = True
+    report = worker.run("ping")
+    assert "swept" not in report and len(swept) == 1  # failed: tried again
+    report = worker.run("timer")
+    assert report["swept"] == {"fake": 2}
+    assert swept[-1] == ("dev", ["fake"]) and len(swept) == 2
+    kodi.scanning = False
     report = worker.run("start")
-    assert "swept" not in report
+    assert "swept" not in report and len(swept) == 2
