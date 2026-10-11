@@ -149,7 +149,7 @@ def test_the_duplicate_becomes_a_typed_version_of_the_owner(video):
     ) == [(owner["fileid"],)]
 
 
-def test_a_builtin_name_reuses_kodis_row_and_a_stem_name_is_the_standard_edition(video):
+def test_a_builtin_name_reuses_kodis_row_an_empty_one_is_the_standard_edition(video):
     owner, duplicate = _rows(video)
     GroupVersions().apply(
         _request(owner, duplicate, name="Director's Cut"),
@@ -173,6 +173,63 @@ def test_a_builtin_name_reuses_kodis_row_and_a_stem_name_is_the_standard_edition
         "SELECT idType FROM videoversion WHERE idFile = ?",
         (duplicate2["fileid"],),
     ) == [(40400,)]
+    # Any other name is a user type: Kofin sends an empty name for a source
+    # called after its own file, so nothing here compares a name with a path.
+    owner3, duplicate3 = _rows(video, item_id="c")
+    GroupVersions().apply(
+        _request(owner3, duplicate3, name="Fixture c - 4K", item_id="c"),
+        Context(NAMESPACE, "dev", GATE),
+    )
+    assert query(
+        video,
+        "SELECT t.name, t.owner FROM videoversion v JOIN videoversiontype t"
+        " ON t.id = v.idType WHERE v.idFile = ?",
+        (duplicate3["fileid"],),
+    ) == [("Fixture c - 4K", 2)]
+
+
+def test_the_owner_named_as_its_own_version_is_refused_untouched(video):
+    """Kodi's ConvertVideoToVersion converts only when source and target
+    differ. Without that guard the move is a no-op and the delete takes the
+    owner, its version row and its stream details."""
+    owner, duplicate = _rows(video)
+    before = [
+        query(video, "SELECT * FROM movie ORDER BY idMovie"),
+        query(video, "SELECT * FROM videoversion ORDER BY idFile"),
+        query(video, "SELECT * FROM streamdetails ORDER BY idFile"),
+        query(video, "SELECT * FROM art ORDER BY art_id"),
+    ]
+    request = _request(owner, {"movieid": owner["movieid"]})
+    request.fields["versions"][0]["file"] = movie_url("a")
+    with pytest.raises(Refused, match="is the owner itself"):
+        GroupVersions().apply(request, Context(NAMESPACE, "dev", GATE))
+    # The same refusal with the owner listed after a real duplicate: the
+    # writes made for the first entry are rolled back with it.
+    both = _request(owner, duplicate)
+    both.fields["versions"].append({"movieid": owner["movieid"], "name": ""})
+    with pytest.raises(Refused, match="is the owner itself"):
+        GroupVersions().apply(both, Context(NAMESPACE, "dev", GATE))
+    assert before == [
+        query(video, "SELECT * FROM movie ORDER BY idMovie"),
+        query(video, "SELECT * FROM videoversion ORDER BY idFile"),
+        query(video, "SELECT * FROM streamdetails ORDER BY idFile"),
+        query(video, "SELECT * FROM art ORDER BY art_id"),
+    ]
+
+
+def test_a_second_row_by_the_movies_own_url_is_not_a_version(video):
+    conn = sqlite3.connect(video)
+    try:
+        owner = videorows.add_movie(conn, "a", "Fixture a")
+        twin = videorows.add_movie(conn, "a", "Fixture a", path_id=owner["pathid"])
+        conn.commit()
+    finally:
+        conn.close()
+    request = _request(owner, twin)
+    request.fields["versions"][0]["file"] = movie_url("a")
+    with pytest.raises(Refused, match="names no media source"):
+        GroupVersions().apply(request, Context(NAMESPACE, "dev", GATE))
+    assert query(video, "SELECT COUNT(*) FROM movie") == [(2,)]
 
 
 def test_confirm_holds_until_a_row_comes_back(video):
@@ -191,15 +248,37 @@ def test_confirm_holds_until_a_row_comes_back(video):
     conn.close()
     assert not handler.confirm(request, entry, context)
     handler.withdraw(entry, context)  # nothing to undo, nothing raised
+    # A failed confirm is a re-apply. The duplicate movie row is long gone,
+    # so the file is found by its URL, put back under the owner, and still
+    # named in what the ledger keeps: the next confirm is about that file.
+    again = handler.apply(request, context)
+    assert [g["fileid"] for g in again["grouped"]] == [duplicate["fileid"]]
+    assert again["grouped"][0]["movieid"] == duplicate["movieid"]
+    assert query(
+        video,
+        "SELECT idMedia, media_type FROM videoversion WHERE idFile = ?",
+        (duplicate["fileid"],),
+    ) == [(owner["movieid"], "movie")]
+    assert handler.confirm(
+        request, Entry("group_versions", request.hash, again, "t"), context
+    )
+    # With the file gone as well there is nothing left to group.
+    conn = sqlite3.connect(video)
+    conn.execute("DELETE FROM files WHERE idFile = ?", (duplicate["fileid"],))
+    conn.commit()
+    conn.close()
+    assert handler.apply(request, context)["grouped"] == []
 
 
 def test_applying_twice_is_harmless_and_a_gone_duplicate_is_skipped(video):
     owner, duplicate = _rows(video)
     handler = GroupVersions()
     context = Context(NAMESPACE, "dev", GATE)
-    handler.apply(_request(owner, duplicate), context)
+    first = handler.apply(_request(owner, duplicate), context)
     data = handler.apply(_request(owner, duplicate), context)
-    assert data["grouped"] == []
+    # The duplicate movie row is gone; its file is still the owner's
+    # version, untouched, and still what the ledger watches.
+    assert data == first
     assert query(video, "SELECT COUNT(*) FROM videoversion") == [(2,)]
 
 

@@ -88,6 +88,25 @@ WHERE       idMedia = ?
 AND         media_type = 'movie'
 AND         idFile = ?
 """
+get_file_ids_by_filename = """
+SELECT      idFile
+FROM        files
+WHERE       strFilename = ?
+"""
+get_version_row = """
+SELECT      idMedia, media_type, idType
+FROM        videoversion
+WHERE       idFile = ?
+"""
+attach_version = """
+UPDATE      videoversion
+SET         idMedia = ?, media_type = 'movie', itemType = ?, idType = ?
+WHERE       idFile = ?
+"""
+add_video_version = """
+INSERT INTO videoversion(idFile, idMedia, media_type, itemType, idType)
+VALUES      (?, ?, 'movie', ?, ?)
+"""
 movie_exists = """
 SELECT      COUNT(*)
 FROM        movie
