@@ -57,6 +57,6 @@ class Handler:
         return True
 
     def sweep(self, context: Context, entries: List[Entry]) -> int:
-        """At a service start: remove what this kind wrote that no ledger
+        """Once per process: remove what this kind wrote that no ledger
         entry names (a crash's leftovers). Returns how many were removed."""
         return 0

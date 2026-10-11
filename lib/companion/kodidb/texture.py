@@ -16,7 +16,7 @@ reproduction of Kodi's URL encoder and CRC is what this module exists for.
 """
 
 import sqlite3
-from typing import List, Optional, Tuple
+from typing import Collection, List, Optional, Tuple
 
 from companion.kodidb import queries_texture as QUTEX
 
@@ -100,12 +100,15 @@ class TextureCache(object):
         cachedurl: str = row[0]
         return cachedurl
 
-    def remove_like(self, pattern: str) -> List[Tuple[str, str]]:
-        """Drop every row whose url matches the SQL LIKE ``pattern``;
-        returns the removed ``(url, cachedurl)`` pairs."""
+    def remove_like(
+        self, pattern: str, keep: Collection[str] = ()
+    ) -> List[Tuple[str, str]]:
+        """Drop every row whose url matches the SQL LIKE ``pattern`` and is
+        not in ``keep``; returns the removed ``(url, cachedurl)`` pairs, for
+        the caller to remove the files."""
         self.cursor.execute(QUTEX.get_cache_like, (pattern,))
         rows: List[Tuple[str, str]] = [
-            (row[0], row[1]) for row in self.cursor.fetchall()
+            (row[0], row[1]) for row in self.cursor.fetchall() if row[0] not in keep
         ]
         for url, _cachedurl in rows:
             self.cursor.execute(QUTEX.delete_cache, (url,))

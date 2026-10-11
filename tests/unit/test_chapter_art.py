@@ -1,6 +1,7 @@
 """Chapter art: the bench-verified key vectors carried from Kofin, the texture
 writer against the Textures14 fixture, and the handler end to end."""
 
+import json
 import os
 import sqlite3
 
@@ -127,7 +128,11 @@ def test_add_replaces_remove_cascades_and_like_is_scoped(texture_db):
     assert cache.get("chapter://x/1") == "a/new.jpg" and cache.get("nope") is None
     assert cache.remove("chapter://x/1") == "a/new.jpg"
     assert cache.remove("chapter://x/1") is None
-    assert cache.remove_like("chapter://y/%") == [("chapter://y/1", "b/y.jpg")]
+    cache.add("chapter://y/2", "b/y2.jpg", 1, 1)
+    assert cache.remove_like("chapter://y/%", keep={"chapter://y/2"}) == [
+        ("chapter://y/1", "b/y.jpg")
+    ]
+    assert cache.remove_like("chapter://y/%") == [("chapter://y/2", "b/y2.jpg")]
     conn.commit()
     conn.close()
     assert _query(texture_db, "SELECT COUNT(*) FROM texture")[0][0] == 0
@@ -227,6 +232,121 @@ def test_refusals(rig):
         )
     db_path = str(profile / "Database" / "Textures14.db")
     assert _query(db_path, "SELECT COUNT(*) FROM texture")[0][0] == 0
+
+
+def _thumbnails(profile):
+    root = profile / "Thumbnails"
+    return sorted(
+        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()
+    )
+
+
+def test_nothing_is_copied_for_a_request_that_is_refused(rig):
+    """Every chapter is read before any file is copied: a malformed entry
+    after a good one used to leave the good one's file in Thumbnails with
+    no row, where the sweep, which finds files through rows, never sees it."""
+    profile, files = rig
+    handler = ChapterArt()
+    context = Context("ns", DEVICE, GATE)
+    for bad in ({"file": "x"}, "not-a-chapter", {"n": "two", "file": files[1]}):
+        with pytest.raises(Refused, match="malformed chapter"):
+            handler.apply(
+                _request(files, chapters=[{"n": 1, "file": files[0]}, bad]), context
+            )
+    db_path = str(profile / "Database" / "Textures14.db")
+    assert _query(db_path, "SELECT COUNT(*) FROM texture")[0][0] == 0
+    assert _thumbnails(profile) == []
+
+
+def test_a_call_that_does_not_commit_takes_its_copies_with_it(rig, monkeypatch):
+    profile, files = rig
+    handler = ChapterArt()
+    context = Context("ns", DEVICE, GATE)
+    db_path = str(profile / "Database" / "Textures14.db")
+    # One tile is already seeded: its file is not this call's to remove.
+    first = handler.apply(_request(files[:1]), context)
+    kept = [rel for _key, rel in first["keys"]]
+    assert _thumbnails(profile) == kept
+    calls = []
+    real_add = TextureCache.add
+
+    def failing_add(self, url, cachedurl, width, height):
+        calls.append(url)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError("database is locked")
+        real_add(self, url, cachedurl, width, height)
+
+    monkeypatch.setattr(TextureCache, "add", failing_add)
+    with pytest.raises(sqlite3.OperationalError):
+        handler.apply(_request(files), context)
+    assert _thumbnails(profile) == kept
+    assert [u for (u,) in _query(db_path, "SELECT url FROM texture")] == [
+        first["keys"][0][0]
+    ]
+
+
+def test_a_changed_request_drops_the_tiles_it_no_longer_names(rig, kodi):
+    """Through the reconciler: the request comes back with fewer chapters,
+    its earlier form is withdrawn before the new one is applied, and the
+    tile that left is gone, row and file."""
+    from companion import reconciler
+    from companion.ledger import Ledger
+
+    profile, files = rig
+    kofin = profile / "addon_data" / "plugin.video.kofin"
+    own = profile / "addon_data" / "service.kofin.companion"
+    (kofin / "api-capabilities.json").write_text('{"backend": "api"}', encoding="utf-8")
+    ledger = Ledger(str(own / "written.json"))
+    worker = reconciler.Reconciler(
+        {"chapter_art": ChapterArt()},
+        ledger,
+        str(kofin / "companion" / "requests.json"),
+        str(kofin / "api-capabilities.json"),
+        str(own / "status.json"),
+        setting=lambda name: True,
+        busy=lambda: False,
+        version=lambda: "0.1.0",
+    )
+
+    def publish(count, generation):
+        chapters = [
+            {"n": n, "file": f, "width": 640, "height": 360}
+            for n, f in enumerate(files[:count], 1)
+        ]
+        document = {
+            "v": 2,
+            "generation": generation,
+            "namespace": "ns",
+            "device": DEVICE,
+            "kinds": ["chapter_art"],
+            "requests": [
+                {
+                    "id": "c1",
+                    "kind": "chapter_art",
+                    "item": "m1",
+                    "dynpath": DYNPATH,
+                    "chapters": chapters,
+                }
+            ],
+        }
+        (kofin / "companion" / "requests.json").write_text(
+            json.dumps(document), encoding="utf-8"
+        )
+
+    db_path = str(profile / "Database" / "Textures14.db")
+    publish(3, 1)
+    assert worker.run("ping")["requests"]["c1"]["state"] == "done"
+    assert len(_thumbnails(profile)) == 3
+    publish(2, 2)
+    assert worker.run("ping")["requests"]["c1"]["state"] == "done"
+    keys = [key for key, _rel in ledger.get("c1").data["keys"]]
+    assert keys == [chapter_art_key(DYNPATH, n, True) for n in (1, 2)]
+    assert sorted(u for (u,) in _query(db_path, "SELECT url FROM texture")) == sorted(
+        keys
+    )
+    assert _thumbnails(profile) == sorted(
+        rel for _key, rel in ledger.get("c1").data["keys"]
+    )
 
 
 def test_the_sweep_removes_only_this_devices_leftovers(rig):

@@ -43,6 +43,8 @@ class Reconciler:
         self.busy = busy
         self.version = version
         self._last_idle: Optional[str] = None
+        # Whether the handlers' leftovers have been swept in this process.
+        self._swept = False
 
     # -- the run ----------------------------------------------------------------
 
@@ -100,8 +102,11 @@ class Reconciler:
         report["busy"] = busy
         context = Context(document.namespace, document.device, gate)
         outcomes: Dict[str, Dict[str, str]] = {}
-        if trigger == "start" and not busy:
-            report["swept"] = self._sweep(context)
+        if not self._swept and context.device:
+            swept = self._sweep(context)
+            if swept is not None:
+                report["swept"] = swept
+                self._swept = True
         self._withdraw_stale(document, context, busy, outcomes)
         for request in contract.list_requests(document):
             outcomes[request.id] = self._serve(request, context, busy)
@@ -116,9 +121,15 @@ class Reconciler:
 
     # -- the steps --------------------------------------------------------------
 
-    def _sweep(self, context: Context) -> Dict[str, int]:
-        """Each handler's leftovers from a crash, once per generation."""
+    def _sweep(self, context: Context) -> Optional[Dict[str, int]]:
+        """Each handler's leftovers from a crash, once per process: at the
+        first wake whose document names the device, since a sweep is keyed
+        by it and a companion can start before Kofin has published. Not
+        held back by a library scan, which writes other databases than the
+        ones a sweep cleans. None when a handler's sweep failed, and then
+        the next wake tries again."""
         swept: Dict[str, int] = {}
+        complete = True
         for kind, handler in self.handlers.items():
             if schema.gate_refusal(context.gate, handler.needs) is not None:
                 continue
@@ -127,7 +138,8 @@ class Reconciler:
                 swept[kind] = handler.sweep(context, entries)
             except Exception:
                 LOG.exception("sweep of %s failed", kind)
-        return swept
+                complete = False
+        return swept if complete else None
 
     def _withdraw_stale(
         self,

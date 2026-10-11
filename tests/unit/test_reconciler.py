@@ -337,18 +337,31 @@ def test_context_reads_the_gated_version():
     assert context.version("video") == 149 and context.version("texture") == 0
 
 
-def test_a_start_sweeps_each_handlers_leftovers_once(rig):
-    _, handler, ledger, worker, publish, status, kodi, _ = rig
+def test_leftovers_are_swept_once_at_the_first_wake_that_names_a_device(rig):
+    """Once per process, whatever woke it and whether or not a scan runs: a
+    sweep cleans by the document's device id, so it waits for a document
+    that has one, and a sweep that failed is tried again."""
+    _, handler, ledger, worker, publish, status, kodi, kofin = rig
     swept = []
-    handler.sweep = (
-        lambda context, entries: swept.append([e.kind for e in entries]) or 2
-    )
+
+    def sweep(context, entries):
+        swept.append((context.device, [e.kind for e in entries]))
+        if len(swept) == 1:
+            raise RuntimeError("locked")
+        return 2
+
+    handler.sweep = sweep
+    # No document yet: nothing to key a sweep by.
+    report = worker.run("start")
+    assert "swept" not in report and swept == []
     ledger.put("old", "fake", "h", {"rows": [1]})
     publish([{"id": "old", "kind": "fake"}])
-    report = worker.run("start")
-    assert report["swept"] == {"fake": 2} and swept == [["fake"]]
-    report = worker.run("timer")
-    assert "swept" not in report and len(swept) == 1
     kodi.scanning = True
+    report = worker.run("ping")
+    assert "swept" not in report and len(swept) == 1  # failed: tried again
+    report = worker.run("timer")
+    assert report["swept"] == {"fake": 2}
+    assert swept[-1] == ("dev", ["fake"]) and len(swept) == 2
+    kodi.scanning = False
     report = worker.run("start")
-    assert "swept" not in report
+    assert "swept" not in report and len(swept) == 2
