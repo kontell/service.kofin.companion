@@ -16,7 +16,8 @@ reproduction of Kodi's URL encoder and CRC is what this module exists for.
 """
 
 import sqlite3
-from typing import Collection, List, Optional, Tuple
+from typing import Callable, Collection, List, Optional, Tuple
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from companion.kodidb import queries_texture as QUTEX
 
@@ -70,6 +71,29 @@ def cached_rel_path(key: str, extension: str = ".jpg") -> str:
     return "%s/%s%s" % (hexcrc[0], hexcrc, extension)
 
 
+_WRAPPED = "image://video@"
+_RAW = "chapter://"
+
+
+def key_dynpath(key: str) -> str:
+    """The dynpath a chapter cache key was made for, or empty when the key
+    is of neither chapter form: the inverse of ``chapter_art_key``."""
+    if key.startswith(_WRAPPED):
+        encoded, mark, _number = key[len(_WRAPPED) :].rpartition("/?chapter=")
+        return unquote(encoded) if mark else ""
+    if key.startswith(_RAW):
+        dynpath, mark, number = key[len(_RAW) :].rpartition("/")
+        return dynpath if mark and number.isdigit() else ""
+    return ""
+
+
+def dynpath_device(dynpath: str) -> str:
+    """The ``deviceId`` a stream URL names, or empty: the whole value, so
+    that device ``tv-1`` does not own the streams of ``tv-10``."""
+    values = parse_qs(urlsplit(dynpath).query).get("deviceId") or []
+    return values[0] if len(values) == 1 else ""
+
+
 class TextureCache(object):
     """Row-level access; file placement stays with the caller."""
 
@@ -100,15 +124,28 @@ class TextureCache(object):
         cachedurl: str = row[0]
         return cachedurl
 
+    def references(self, cachedurl: str) -> int:
+        """How many rows name ``cachedurl``. Kodi names a cache file by the
+        CRC of the lower-cased key, so keys that differ by case alone share
+        one file: it is removed only when no row is left that names it."""
+        self.cursor.execute(QUTEX.count_cachedurl, (cachedurl,))
+        return int(self.cursor.fetchone()[0])
+
     def remove_like(
-        self, pattern: str, keep: Collection[str] = ()
+        self,
+        pattern: str,
+        keep: Collection[str] = (),
+        only: Optional[Callable[[str], bool]] = None,
     ) -> List[Tuple[str, str]]:
-        """Drop every row whose url matches the SQL LIKE ``pattern`` and is
-        not in ``keep``; returns the removed ``(url, cachedurl)`` pairs, for
-        the caller to remove the files."""
+        """Drop every row whose url matches the SQL LIKE ``pattern``, is not
+        in ``keep`` and passes ``only``; returns the removed ``(url,
+        cachedurl)`` pairs, for the caller to remove the files nothing
+        references any more."""
         self.cursor.execute(QUTEX.get_cache_like, (pattern,))
         rows: List[Tuple[str, str]] = [
-            (row[0], row[1]) for row in self.cursor.fetchall() if row[0] not in keep
+            (row[0], row[1])
+            for row in self.cursor.fetchall()
+            if row[0] not in keep and (only is None or only(row[0]))
         ]
         for url, _cachedurl in rows:
             self.cursor.execute(QUTEX.delete_cache, (url,))
