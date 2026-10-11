@@ -349,6 +349,61 @@ def test_a_changed_request_drops_the_tiles_it_no_longer_names(rig, kodi):
     )
 
 
+def test_a_device_id_is_matched_whole(rig):
+    """``deviceId=tv-1`` is a substring of ``deviceId=tv-10`` and a LIKE
+    pattern reads ``%`` and ``_`` in an id as wildcards. Ownership and the
+    sweep both compare the stream URL's deviceId value as a whole."""
+    profile, files = rig
+    handler = ChapterArt()
+    db_path = str(profile / "Database" / "Textures14.db")
+    longer = DYNPATH.replace("deviceId=" + DEVICE, "deviceId=" + DEVICE + "0")
+    with pytest.raises(Refused, match="not owned"):
+        handler.apply(_request(files, dynpath=longer), Context("ns", DEVICE, GATE))
+    theirs = handler.apply(
+        _request(files, dynpath=longer), Context("ns", DEVICE + "0", GATE)
+    )
+    # Nothing in the ledger names those rows, and they are not this device's.
+    for device in (DEVICE, "device-_", "%"):
+        assert handler.sweep(Context("ns", device, GATE), []) == 0
+    assert _query(db_path, "SELECT COUNT(*) FROM texture")[0][0] == 3
+    assert len(_thumbnails(profile)) == 3
+    assert handler.sweep(Context("ns", DEVICE + "0", GATE), []) == len(theirs["keys"])
+    assert _thumbnails(profile) == []
+
+
+def test_a_file_stays_while_another_row_names_it(rig):
+    """Kodi's cache file name is the CRC of the lower-cased key, so two keys
+    that differ by case alone are two rows and one file."""
+    profile, files = rig
+    handler = ChapterArt()
+    context = Context("ns", DEVICE, GATE)
+    db_path = str(profile / "Database" / "Textures14.db")
+    upper = DYNPATH.replace("http://", "HTTP://")
+    assert upper != DYNPATH
+    first = handler.apply(_request(files[:1]), context)
+    second = handler.apply(_request(files[:1], dynpath=upper), context)
+    (key_a, rel_a), (key_b, rel_b) = first["keys"][0], second["keys"][0]
+    assert key_a != key_b and rel_a == rel_b
+    assert _query(db_path, "SELECT COUNT(*) FROM texture")[0][0] == 2
+    handler.withdraw(Entry("chapter_art", "h", first, "t"), context)
+    assert _thumbnails(profile) == [rel_b]
+    assert handler.confirm(
+        _request(files[:1], dynpath=upper),
+        Entry("chapter_art", "h", second, "t"),
+        context,
+    )
+    # The sweep, with the second still in the ledger and the first's row
+    # back as a leftover: the row goes, the shared file stays.
+    conn = sqlite3.connect(db_path)
+    TextureCache(conn.cursor()).add(key_a, rel_a, 1, 1)
+    conn.commit()
+    conn.close()
+    assert handler.sweep(context, [Entry("chapter_art", "h", second, "t")]) == 1
+    assert _thumbnails(profile) == [rel_b]
+    handler.withdraw(Entry("chapter_art", "h", second, "t"), context)
+    assert _thumbnails(profile) == []
+
+
 def test_the_sweep_removes_only_this_devices_leftovers(rig):
     profile, files = rig
     handler = ChapterArt()
