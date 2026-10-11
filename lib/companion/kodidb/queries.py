@@ -116,12 +116,34 @@ WHERE       idMovie = ?
 # the type each is filed under.
 get_assets_of_movie = """
 SELECT      videoversion.idFile, files.strFilename, videoversion.itemType,
-            videoversion.idType
+            videoversion.idType, path.strPath
 FROM        videoversion
 JOIN        files ON files.idFile = videoversion.idFile
+JOIN        path ON path.idPath = files.idPath
 WHERE       videoversion.idMedia = ?
 AND         videoversion.media_type = 'movie'
-AND         videoversion.idFile != ?
+ORDER BY    videoversion.idFile
+"""
+# Kodi's SetDefaultVideoVersion, its three statements: the movie's file and
+# base path (c22, VIDEODB_ID_BASEPATH), then the art swap -- the movie's art
+# becomes the art of the file that was the default, as a version, and the
+# new default's version art becomes the movie's.
+set_default_file = """
+UPDATE      movie
+SET         idFile = ?, c22 = ?
+WHERE       idMovie = ?
+"""
+movie_art_to_version = """
+UPDATE      art
+SET         media_type = 'videoversion', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'movie'
+"""
+version_art_to_movie = """
+UPDATE      art
+SET         media_type = 'movie', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'videoversion'
 """
 delete_file = """
 DELETE FROM files

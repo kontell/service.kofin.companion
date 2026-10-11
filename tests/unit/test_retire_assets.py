@@ -173,6 +173,161 @@ def test_an_empty_desired_set_removes_every_asset_row_but_not_the_users(video):
     ) == [(1,)]
 
 
+def _set_default(video, owner, file_id):
+    """Kodi's Set as Default (SetDefaultVideoVersion), its three statements."""
+    conn = sqlite3.connect(video)
+    try:
+        (old,) = conn.execute(
+            "SELECT idFile FROM movie WHERE idMovie = ?", (owner["movieid"],)
+        ).fetchone()
+        (base,) = conn.execute(
+            "SELECT strPath FROM path JOIN files ON files.idPath = path.idPath"
+            " WHERE idFile = ?",
+            (file_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE movie SET idFile = ?, c22 = ? WHERE idMovie = ?",
+            (file_id, base, owner["movieid"]),
+        )
+        conn.execute(
+            "UPDATE art SET media_type = 'videoversion', media_id = ?"
+            " WHERE media_id = ? AND media_type = 'movie'",
+            (old, owner["movieid"]),
+        )
+        conn.execute(
+            "UPDATE art SET media_type = 'movie', media_id = ?"
+            " WHERE media_id = ? AND media_type = 'videoversion'",
+            (owner["movieid"], file_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_the_movies_own_file_survives_another_default(video):
+    """Set as Default moves movie.idFile and nothing else, so the movie's
+    own file becomes one more asset row. Kofin never lists it among the
+    assets; judged by movie.idFile it was deleted as undesired, with no
+    scan to bring it back."""
+    owner, assets = _grouped(video)
+    _set_default(video, owner, assets["s2"])
+    handler = RetireAssets()
+    context = Context(NAMESPACE, "dev", GATE)
+    # s2 is kept and renamed while it is the default; s3 is dropped.
+    request = _request(
+        owner, [("s2", "Festival Cut")], ["Deleted Scene.mkv", "Making Of.mp4"]
+    )
+    data = handler.apply(request, context)
+    assert [r["fileid"] for r in data["removed"]] == [assets["s3"]]
+    assert [r["fileid"] for r in data["retyped"]] == [assets["s2"]]
+    assert query(
+        video, "SELECT COUNT(*) FROM files WHERE idFile = ?", (owner["fileid"],)
+    ) == [(1,)]
+    assert query(
+        video,
+        "SELECT idMedia, idType FROM videoversion WHERE idFile = ?",
+        (owner["fileid"],),
+    ) == [(owner["movieid"], 40400)]
+    assert query(
+        video, "SELECT idFile FROM movie WHERE idMovie = ?", (owner["movieid"],)
+    ) == [(assets["s2"],)]
+    entry = Entry("retire_assets", request.hash, data, "t")
+    assert handler.confirm(request, entry, context)
+    assert handler.apply(request, context)["removed"] == []
+
+
+def test_a_dropped_default_gives_the_movie_its_own_file_back(video):
+    owner, assets = _grouped(video)
+    before_art = query(
+        video,
+        "SELECT type, url FROM art WHERE media_id = ? AND media_type = 'movie'",
+        (owner["movieid"],),
+    )
+    _set_default(video, owner, assets["s3"])
+    handler = RetireAssets()
+    context = Context(NAMESPACE, "dev", GATE)
+    request = _request(
+        owner, [("s2", "Director's Cut")], ["Deleted Scene.mkv", "Making Of.mp4"]
+    )
+    data = handler.apply(request, context)
+    assert [r["fileid"] for r in data["removed"]] == [assets["s3"]]
+    # Back on its own file the way Set as Default would have put it there:
+    # the file, the base path, and the art that had gone to the version.
+    assert query(
+        video, "SELECT idFile, c22 FROM movie WHERE idMovie = ?", (owner["movieid"],)
+    ) == [(owner["fileid"], movie_dir("a"))]
+    assert (
+        query(
+            video,
+            "SELECT type, url FROM art WHERE media_id = ? AND media_type = 'movie'",
+            (owner["movieid"],),
+        )
+        == before_art
+    )
+    assert query(
+        video, "SELECT COUNT(*) FROM files WHERE idFile = ?", (assets["s3"],)
+    ) == [(0,)]
+    assert query(
+        video, "SELECT COUNT(*) FROM art WHERE media_id = ?", (assets["s3"],)
+    ) == [(0,)]
+    assert handler.confirm(
+        request, Entry("retire_assets", request.hash, data, "t"), context
+    )
+
+
+def test_a_default_that_is_not_kofins_is_left_alone_and_the_rest_reconciled(video):
+    """A local file the user attached and made the default used to refuse
+    the whole request, which froze retirement for that movie."""
+    owner, assets = _grouped(video)
+    conn = sqlite3.connect(video)
+    local_path = videorows.add_path(conn, "smb://nas/films/")
+    foreign = videorows.add_file(conn, local_path, "film-extended.mkv")
+    conn.execute(
+        "INSERT INTO videoversion (idFile, idMedia, media_type, itemType, idType)"
+        " VALUES (?, ?, 'movie', 1, 40401)",
+        (foreign, owner["movieid"]),
+    )
+    conn.commit()
+    conn.close()
+    _set_default(video, owner, foreign)
+    handler = RetireAssets()
+    context = Context(NAMESPACE, "dev", GATE)
+    request = _request(owner, [("s2", "Director's Cut")], ["Deleted Scene.mkv"])
+    data = handler.apply(request, context)
+    assert sorted(r["fileid"] for r in data["removed"]) == sorted(
+        [assets["s3"], assets["Making Of.mp4"]]
+    )
+    assert query(
+        video, "SELECT idFile FROM movie WHERE idMovie = ?", (owner["movieid"],)
+    ) == [(foreign,)]
+    assert query(
+        video,
+        "SELECT COUNT(*) FROM files WHERE idFile IN (?, ?)",
+        (foreign, owner["fileid"]),
+    ) == [(2,)]
+    entry = Entry("retire_assets", request.hash, data, "t")
+    assert handler.confirm(request, entry, context)
+    # Another namespace's reconcile does not confirm it, as apply would
+    # not serve it.
+    assert not handler.confirm(request, entry, Context("other", "dev", GATE))
+
+
+def test_a_movie_without_its_own_file_is_not_served(video):
+    owner, assets = _grouped(video)
+    _set_default(video, owner, assets["s2"])
+    conn = sqlite3.connect(video)
+    conn.execute("DELETE FROM files WHERE idFile = ?", (owner["fileid"],))
+    conn.commit()
+    conn.close()
+    handler = RetireAssets()
+    context = Context(NAMESPACE, "dev", GATE)
+    with pytest.raises(Refused, match="not owned: owner"):
+        handler.apply(_request(owner, [], []), context)
+    assert query(
+        video, "SELECT COUNT(*) FROM files WHERE idFile = ?", (assets["s2"],)
+    ) == [(1,)]
+
+
 def test_refusals(video):
     owner, assets = _grouped(video)
     handler = RetireAssets()

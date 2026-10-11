@@ -138,11 +138,19 @@ class Movies:
 
     # -- assets (versions and extras) of a grouped movie ---------------------
 
-    def assets_of(self, movie_id, own_file_id):
-        """[(idFile, strFilename, itemType, idType)] of the movie's version
-        files and extras, its own file left out."""
-        self.cursor.execute(QU.get_assets_of_movie, (movie_id, own_file_id))
+    def assets_of(self, movie_id):
+        """[(idFile, strFilename, itemType, idType, strPath)] of every asset
+        row of the movie: its version files, its extras, and its own file,
+        whichever of them is the default at the moment."""
+        self.cursor.execute(QU.get_assets_of_movie, (movie_id,))
         return self.cursor.fetchall()
+
+    def set_default_file(self, movie_id, old_file_id, file_id, base_path):
+        """Kodi's SetDefaultVideoVersion, statement for statement: the
+        movie plays ``file_id``, and the art changes hands with it."""
+        self.cursor.execute(QU.set_default_file, (file_id, base_path, movie_id))
+        self.cursor.execute(QU.movie_art_to_version, (old_file_id, movie_id))
+        self.cursor.execute(QU.version_art_to_movie, (movie_id, file_id))
 
     def delete_file(self, file_id):
         """Drop the files row; Kodi's delete_file trigger cascades the
