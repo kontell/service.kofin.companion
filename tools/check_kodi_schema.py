@@ -17,12 +17,13 @@ Two things it deliberately does not do:
   one it **fails** rather than reporting "nothing new" -- the constant has
   moved file twice already (Omega has it in ``VideoDatabase.cpp``, master in
   ``VideoDatabaseMigration.cpp``), and a rename that read as "up to date"
-  would disable the watch permanently with a green tick. Same shape as the
-  rule above ``downloader._get_items``: a swallowed error here reads
-  downstream as good news.
+  would disable the watch permanently with a green tick: a swallowed error
+  here reads downstream as good news.
 * It does not open the gate, and the issue it files does not either. Admitting
-  a version means dumping fixtures from a real install and passing the L2
-  suite against them (``docs/myvideos148-gate.md`` is the worked example).
+  a version means dumping fixtures from a real install and passing this
+  repository's suite against them. The fixtures are Kofin's, and Kofin's
+  repository has the worked examples (its ``docs/myvideos147-gate.md`` and
+  ``docs/myvideos148-gate.md``).
 
 Usage:
 
@@ -267,7 +268,7 @@ def issue_body(finding: dict) -> str:
     supported = ", ".join(str(v) for v in finding["supported"])
     return """\
 Upstream Kodi has bumped the **{kind}** database schema to **{name}**, which is
-newer than anything `sync/schema.py` admits (`SUPPORTED["{kind}"]` = {{{supported}}}).
+newer than anything `lib/companion/schema.py` admits (`SUPPORTED["{kind}"]` = {{{supported}}}).
 
 | | |
 |---|---|
@@ -282,23 +283,27 @@ regression; this issue is the prompt to do the work that opens the gate.
 
 ### Opening the gate
 
-Per `CLAUDE.md` (**The schema gate**) — do not skip to the last step:
+In this repository — do not skip to the last step:
 
-- [ ] Dump `.schema` fixtures from a real, untouched install into
-      `tests/fixtures/` (`{name_lower}.sql` and its `_seed.sql`).
-- [ ] Extract the creation-time seed rows.
-- [ ] Add the version to the L2 parameterization in `tests/unit/kodifixtures.py`
-      and `tests/unit/test_sync_writers.py`.
-- [ ] Key any version-dependent constants in `schema.py` — `EXTRA_ITEM_TYPE`
-      for video, `MUSIC_SEED_SQL` for music, `CHAPTER_ART_WRAPPED` for texture.
-      `test_sync_schema.py` refuses a `SUPPORTED` entry without them.
+- [ ] Take the `.schema` dump of a real, untouched install into
+      `tests/fixtures/` (`{name_lower}.sql`, and its `_seed.sql` where the
+      database is created with rows). The dumps are Kofin's, byte for byte:
+      take them from there once Kofin has admitted the version.
+- [ ] Point `tests/unit/kodifixtures.py` at the new version, so every handler
+      suite builds its databases from it.
+- [ ] Key the version-dependent constants in `lib/companion/schema.py`:
+      `EXTRA_ITEM_TYPE` and `SEASON_HAS_PLOT` for video, `CHAPTER_ART_WRAPPED`
+      for texture. `tests/unit/test_schema.py` refuses a `SUPPORTED` entry
+      without them.
+- [ ] Read what the bump does to the tables the handlers write
+      (`lib/companion/kodidb/`), not only whether the suite still passes: a
+      column a handler never names can still change what its rows mean.
 - [ ] Confirm the suite passes, then add {version} to `SUPPORTED["{kind}"]`.
-- [ ] Write up what the bump moves, as `docs/{name_lower}-gate.md`.
 
-Check what the bump actually does to the DDL before reusing an older fixture:
-`docs/myvideos147-gate.md` is the worked example of a data-only bump that could
-reuse one, and `docs/myvideos148-gate.md` of one that could not. The shortcut is
-not available by analogy.
+Check what the bump actually does to the DDL before reusing an older fixture.
+Kofin's repository has the worked examples: its `docs/myvideos147-gate.md` is a
+data-only bump that could reuse one, and its `docs/myvideos148-gate.md` one
+that could not. The shortcut is not available by analogy.
 
 <!-- {marker} -->
 """.format(
