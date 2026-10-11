@@ -156,6 +156,58 @@ def test_a_seasons_plot_is_updated_through_its_shows_path(video):
         )
 
 
+def test_a_season_is_owned_by_every_path_of_its_show_or_not_at_all(video):
+    """Kodi merges shows that share a title and a premiere onto one row,
+    with a tvshowlinkpath row for each source. Ownership read off the first
+    row returned made the same request applied or refused by row order."""
+    rows = _show(video)
+    request = _request(
+        "season_plot", owner={"seasonid": rows["season"]}, plot="New plot"
+    )
+    handler = SeasonPlot()
+    conn = sqlite3.connect(video)
+    second = videorows.add_path(conn, SHOW_DIR.replace("show1", "show1b"), "tvshows")
+    conn.execute(
+        "INSERT INTO tvshowlinkpath (idShow, idPath) VALUES (?, ?)",
+        (rows["show"], second),
+    )
+    conn.commit()
+    conn.close()
+    # Two libraries of Kofin's: still owned.
+    handler.apply(request, CONTEXT)
+    assert query(
+        video, "SELECT plot FROM seasons WHERE idSeason = ?", (rows["season"],)
+    ) == [("New plot",)]
+    # Merged with a local source, whichever path id is the lower one.
+    for local in ("smb://nas/tv/Show/",):
+        conn = sqlite3.connect(video)
+        local_id = videorows.add_path(conn, local, "tvshows")
+        conn.execute(
+            "INSERT INTO tvshowlinkpath (idShow, idPath) VALUES (?, ?)",
+            (rows["show"], local_id),
+        )
+        conn.commit()
+        conn.close()
+    changed = _request(
+        "season_plot", owner={"seasonid": rows["season"]}, plot="Server plot"
+    )
+    with pytest.raises(Refused, match="not owned"):
+        handler.apply(changed, CONTEXT)
+    conn = sqlite3.connect(video)
+    conn.execute("UPDATE path SET idPath = idPath + 1000 WHERE strPath LIKE 'plugin%'")
+    conn.execute(
+        "UPDATE tvshowlinkpath SET idPath = idPath + 1000 WHERE idPath != ?",
+        (local_id,),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(Refused, match="not owned"):
+        handler.apply(changed, CONTEXT)
+    assert query(
+        video, "SELECT plot FROM seasons WHERE idSeason = ?", (rows["season"],)
+    ) == [("New plot",)]
+
+
 # -- stream_flags -----------------------------------------------------------------
 
 
@@ -178,27 +230,54 @@ def test_stream_flags_land_on_the_rows_in_filing_order(video):
     )
     data = handler.apply(request, CONTEXT)
     assert data == {"fileid": movie["fileid"]}
+    # Every audio and subtitle row the request aligned is stamped NFO (30),
+    # the one whose bits already matched included: Kodi replaces a stored
+    # set at or below what a playback probes (MEDIA, 20), and the flags
+    # would go with it. The video row is not this handler's.
     assert query(
         video,
-        "SELECT iStreamType, iFlags FROM streamdetails WHERE idFile = ? ORDER BY rowid",
+        "SELECT iStreamType, iFlags, iSource FROM streamdetails WHERE idFile = ? ORDER BY rowid",
         (movie["fileid"],),
-    ) == [(0, 0), (1, 0), (1, 1), (2, 64), (2, 129)]
+    ) == [(0, 0, None), (1, 0, 30), (1, 1, 30), (2, 64, 30), (2, 129, 30)]
     entry = Entry("stream_flags", request.hash, data, "t")
     assert handler.confirm(request, entry, CONTEXT)
-    # Fewer rows than flags (a scanner that filed less) is written as far as it goes.
-    more = _request(
-        "stream_flags",
-        owner={"movieid": movie["movieid"]},
-        media="movie",
-        flags={"audio": [1, 1, 1], "subtitle": []},
+    # A row that lost its stamp no longer holds, and is stamped again.
+    conn = sqlite3.connect(video)
+    conn.execute(
+        "UPDATE streamdetails SET iSource = 20 WHERE idFile = ? AND iStreamType = 2",
+        (movie["fileid"],),
     )
-    handler.apply(more, CONTEXT)
+    conn.commit()
+    conn.close()
+    assert not handler.confirm(request, entry, CONTEXT)
+    handler.apply(request, CONTEXT)
+    assert handler.confirm(request, entry, CONTEXT)
+    # Flags are matched to rows by position. A count that differs matches
+    # nothing: nothing is written, the request is refused with the counts,
+    # and a confirmation of it does not hold.
+    for flags, reason in (
+        (
+            {"audio": [1, 1, 1], "subtitle": [64, 129]},
+            "2 audio stream.s. filed, 3 named",
+        ),
+        ({"audio": [0, 1], "subtitle": [64]}, "2 subtitle stream.s. filed, 1 named"),
+    ):
+        more = _request(
+            "stream_flags",
+            owner={"movieid": movie["movieid"]},
+            media="movie",
+            flags=flags,
+        )
+        with pytest.raises(Refused, match=reason):
+            handler.apply(more, CONTEXT)
+        assert not handler.confirm(
+            more, Entry("stream_flags", more.hash, data, "t"), CONTEXT
+        )
     assert query(
         video,
         "SELECT iFlags FROM streamdetails WHERE idFile = ? AND iStreamType = 1 ORDER BY rowid",
         (movie["fileid"],),
-    ) == [(1,), (1,)]
-    assert handler.confirm(more, Entry("stream_flags", more.hash, data, "t"), CONTEXT)
+    ) == [(0,), (1,)]
     with pytest.raises(Refused, match="unknown media"):
         handler.apply(
             _request("stream_flags", owner={"movieid": 1}, media="song", flags={}),

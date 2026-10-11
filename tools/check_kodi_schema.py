@@ -292,8 +292,8 @@ In this repository — do not skip to the last step:
 - [ ] Point `tests/unit/kodifixtures.py` at the new version, so every handler
       suite builds its databases from it.
 - [ ] Key the version-dependent constants in `lib/companion/schema.py`:
-      `EXTRA_ITEM_TYPE` and `SEASON_HAS_PLOT` for video, `CHAPTER_ART_WRAPPED`
-      for texture. `tests/unit/test_schema.py` refuses a `SUPPORTED` entry
+      `EXTRA_ITEM_TYPE`, `SEASON_HAS_PLOT` and `STREAM_SOURCE_NFO` for video,
+      `CHAPTER_ART_WRAPPED` for texture. `tests/unit/test_schema.py` refuses a `SUPPORTED` entry
       without them.
 - [ ] Read what the bump does to the tables the handlers write
       (`lib/companion/kodidb/`), not only whether the suite still passes: a

@@ -52,6 +52,12 @@ STANDARD_EDITION = 40400
 # as ``image://video@{encoded}/?chapter={n}``.
 CHAPTER_ART_WRAPPED: Dict[int, bool] = {14: True}
 
+# CStreamDetail::Source::NFO per MyVideos version (``iSource``, since 148):
+# the precedence a stream row needs for Kodi to keep it against what a
+# player probes, which arrives as MEDIA (20) and replaces anything at or
+# below itself (``ShouldUpdateWithNewDetails``).
+STREAM_SOURCE_NFO: Dict[int, int] = {149: 30}
+
 # Whether the seasons table carries its own plot column.
 SEASON_HAS_PLOT: Dict[int, bool] = {149: True}
 
