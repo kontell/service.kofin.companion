@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional
 from companion import contract, kodi, schema
 from companion.contract import Document, DocumentError, Request
 from companion.handlers.base import Context, Handler, Refused, Retry
-from companion.ledger import Entry, Ledger
+from companion.ledger import Entry, Ledger, LedgerError
 from companion.log import Logger
 
 LOG = Logger(__name__)
@@ -66,6 +66,16 @@ class Reconciler:
             )
             self._idle(report)
             return report
+        if not self.ledger.loaded:
+            try:
+                self.ledger.load()
+            except LedgerError as error:
+                # Nothing is applied or withdrawn against a ledger that could
+                # not be read, and it is not saved over; asked again each run.
+                report["idle"] = str(error)
+                LOG.warning("ledger not read: %s", error)
+                self._idle(report)
+                return report
         try:
             document = contract.read_document(self.requests_path)
         except DocumentError as error:
@@ -83,6 +93,7 @@ class Reconciler:
             return report
         self._last_idle = None
         report["generation"] = document.generation
+        schema.reset_cache()
         gate = schema.gate_report()
         report["gate"] = gate
         busy = self.busy()
@@ -126,19 +137,34 @@ class Reconciler:
                     WAITING, "withdrawal waits for the scan", entry.hash
                 )
                 continue
-            try:
-                handler.withdraw(entry, context)
-            except Retry as error:
-                outcomes[request_id] = _outcome(WAITING, error.reason, entry.hash)
-                continue
-            except Exception:
-                LOG.exception("withdrawal of %s (%s) failed", request_id, entry.kind)
-                outcomes[request_id] = _outcome(
-                    WAITING, "withdrawal failed", entry.hash
-                )
-                continue
-            LOG.info("withdrew %s (%s)", request_id, entry.kind)
-            self.ledger.remove(request_id)
+            kept = self._withdraw(request_id, entry, handler, context)
+            if kept is not None:
+                outcomes[request_id] = kept
+
+    def _withdraw(
+        self, request_id: str, entry: Entry, handler: Handler, context: Context
+    ) -> Optional[Dict[str, str]]:
+        """Undo a ledger entry and forget it. None when it is gone; else the
+        outcome that says why it was kept. The entry leaves the ledger only
+        after its handler has undone it: it is the one record of those rows.
+
+        The gate is asked first, as it is before a write. A database this
+        build does not serve cannot be opened, and a withdrawal that failed
+        on it for that reason would be retried every thirty seconds for a
+        condition only a new build clears."""
+        refusal = schema.gate_refusal(context.gate, handler.needs)
+        if refusal is not None:
+            return _outcome(REFUSED, "withdrawal: %s" % refusal, entry.hash)
+        try:
+            handler.withdraw(entry, context)
+        except Retry as error:
+            return _outcome(WAITING, error.reason, entry.hash)
+        except Exception:
+            LOG.exception("withdrawal of %s (%s) failed", request_id, entry.kind)
+            return _outcome(WAITING, "withdrawal failed", entry.hash)
+        LOG.info("withdrew %s (%s)", request_id, entry.kind)
+        self.ledger.remove(request_id)
+        return None
 
     def _serve(self, request: Request, context: Context, busy: bool) -> Dict[str, str]:
         handler = self.handlers.get(request.kind)
@@ -162,10 +188,24 @@ class Reconciler:
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
         if busy:
             return _outcome(WAITING, "scan", request.hash)
+        if entry is not None and entry.hash != request.hash:
+            # The request's content moved. What its earlier form wrote is
+            # undone before the new form is written, so a row the request no
+            # longer names does not stay behind under an entry that has
+            # stopped listing it.
+            kept = self._withdraw(request.id, entry, handler, context)
+            if kept is not None:
+                return dict(kept, hash=request.hash)
+            entry = None
         try:
             data = handler.apply(request, context)
         except Refused as error:
-            self.ledger.remove(request.id)
+            if entry is not None:
+                # Applied before, no longer holding, and now refused: the
+                # earlier write is undone before its record goes.
+                kept = self._withdraw(request.id, entry, handler, context)
+                if kept is not None:
+                    return dict(kept, hash=request.hash)
             LOG.info("refused %s (%s): %s", request.id, request.kind, error.reason)
             return _outcome(REFUSED, error.reason, request.hash)
         except Retry as error:

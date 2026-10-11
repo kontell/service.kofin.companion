@@ -74,9 +74,15 @@ class SchemaUnsupported(SchemaError):
 
 
 _cache: Dict[str, Tuple[str, int]] = {}
+# What was last logged per kind, so a discovery repeated at every reconcile
+# is one log line per database and one more when it changes.
+_logged: Dict[str, Tuple[str, int]] = {}
 
 
 def reset_cache() -> None:
+    """Forget what was discovered. The reconciler does this at the top of
+    every run: a database Kodi created or upgraded since the last one is
+    seen, and within a run every handler reads the same answer."""
     _cache.clear()
 
 
@@ -96,7 +102,9 @@ def discover(kind: str) -> Tuple[str, int]:
                 newest = (db_file, version)
     if not newest[0]:
         raise DatabaseMissing(kind)
-    LOG.info("discovered %s database: %s", kind, newest[0])
+    if _logged.get(kind) != newest:
+        LOG.info("discovered %s database: %s", kind, newest[0])
+        _logged[kind] = newest
     _cache[kind] = newest
     return newest
 

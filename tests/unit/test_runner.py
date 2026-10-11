@@ -37,3 +37,41 @@ def test_build_resolves_every_path_in_the_profile(profile, kodi):
     assert worker.ledger.path == str(
         profile / "addon_data" / "service.kofin.companion" / "written.json"
     )
+
+
+def test_a_ping_during_a_reconcile_is_not_lost(monkeypatch):
+    """The wake event is cleared before the run. Cleared after it, a ping
+    for a document the run had already read waited out the whole poll."""
+    import threading
+
+    events = []
+
+    class FakeMonitor:
+        def __init__(self):
+            self.wake = threading.Event()
+            self.trigger = "timer"
+            self.waits = 0
+
+        def abortRequested(self):
+            return len(events) >= 2
+
+        def waitForAbort(self, seconds):
+            self.waits += 1
+            return self.waits > 5
+
+    monitor = FakeMonitor()
+
+    class Worker:
+        def run(self, trigger):
+            # The trigger, and how long the loop waited before this run.
+            events.append((trigger, monitor.waits))
+            if len(events) == 1:
+                # Kofin pings while the first reconcile is still running.
+                monitor.trigger = "ping"
+                monitor.wake.set()
+            return {}
+
+    monkeypatch.setattr(runner, "Monitor", lambda: monitor)
+    monkeypatch.setattr(runner, "build", lambda: Worker())
+    runner.run()
+    assert events == [("start", 0), ("ping", 0)]
