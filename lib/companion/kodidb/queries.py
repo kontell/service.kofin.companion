@@ -88,6 +88,25 @@ WHERE       idMedia = ?
 AND         media_type = 'movie'
 AND         idFile = ?
 """
+get_file_ids_by_filename = """
+SELECT      idFile
+FROM        files
+WHERE       strFilename = ?
+"""
+get_version_row = """
+SELECT      idMedia, media_type, idType
+FROM        videoversion
+WHERE       idFile = ?
+"""
+attach_version = """
+UPDATE      videoversion
+SET         idMedia = ?, media_type = 'movie', itemType = ?, idType = ?
+WHERE       idFile = ?
+"""
+add_video_version = """
+INSERT INTO videoversion(idFile, idMedia, media_type, itemType, idType)
+VALUES      (?, ?, 'movie', ?, ?)
+"""
 movie_exists = """
 SELECT      COUNT(*)
 FROM        movie
@@ -97,12 +116,34 @@ WHERE       idMovie = ?
 # the type each is filed under.
 get_assets_of_movie = """
 SELECT      videoversion.idFile, files.strFilename, videoversion.itemType,
-            videoversion.idType
+            videoversion.idType, path.strPath
 FROM        videoversion
 JOIN        files ON files.idFile = videoversion.idFile
+JOIN        path ON path.idPath = files.idPath
 WHERE       videoversion.idMedia = ?
 AND         videoversion.media_type = 'movie'
-AND         videoversion.idFile != ?
+ORDER BY    videoversion.idFile
+"""
+# Kodi's SetDefaultVideoVersion, its three statements: the movie's file and
+# base path (c22, VIDEODB_ID_BASEPATH), then the art swap -- the movie's art
+# becomes the art of the file that was the default, as a version, and the
+# new default's version art becomes the movie's.
+set_default_file = """
+UPDATE      movie
+SET         idFile = ?, c22 = ?
+WHERE       idMovie = ?
+"""
+movie_art_to_version = """
+UPDATE      art
+SET         media_type = 'videoversion', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'movie'
+"""
+version_art_to_movie = """
+UPDATE      art
+SET         media_type = 'movie', media_id = ?
+WHERE       media_id = ?
+AND         media_type = 'videoversion'
 """
 delete_file = """
 DELETE FROM files
@@ -149,12 +190,15 @@ AND         media_id = ?
 AND         media_type = ?
 """
 # A season's show, and the path that says whose the show is.
-get_season_show_path = """
+# One row per path the season's show is linked to: Kodi merges shows that
+# share a title and a premiere onto one row, so a show can have several.
+get_season_show_paths = """
 SELECT      seasons.idShow, path.strPath, seasons.plot
 FROM        seasons
-JOIN        tvshowlinkpath ON tvshowlinkpath.idShow = seasons.idShow
-JOIN        path ON path.idPath = tvshowlinkpath.idPath
+LEFT JOIN   tvshowlinkpath ON tvshowlinkpath.idShow = seasons.idShow
+LEFT JOIN   path ON path.idPath = tvshowlinkpath.idPath
 WHERE       seasons.idSeason = ?
+ORDER BY    path.idPath
 """
 update_season_plot = """
 UPDATE      seasons
@@ -162,7 +206,7 @@ SET         plot = ?
 WHERE       idSeason = ?
 """
 get_stream_rows = """
-SELECT      rowid, iFlags
+SELECT      rowid, iFlags, iSource
 FROM        streamdetails
 WHERE       idFile = ?
 AND         iStreamType = ?
@@ -170,7 +214,7 @@ ORDER BY    rowid
 """
 update_stream_flags = """
 UPDATE      streamdetails
-SET         iFlags = ?
+SET         iFlags = ?, iSource = ?
 WHERE       rowid = ?
 """
 # Kodi's own Clean: a set no movie links. Scoped to one title here.

@@ -4,14 +4,22 @@ the flags of a file's audio and subtitle streams (S09), and the row of a
 set Kofin emptied (S23).
 
 Each is one small write to a row Kofin owns, read back before the write
-through the row's resolver URL, or the show's path for a season. A tag is
-undone on withdrawal, since the request leaves when the episode stops being
-a favourite; a plot, a flag or a deletion stands.
+through the row's resolver URL, or every path of the show for a season. A
+tag is undone on withdrawal, since the request leaves when the episode
+stops being a favourite; a plot, a flag or a deletion stands.
+
+A flag stands only if Kodi keeps the row it is on. A stream row the scanner
+filed has no source, the bottom of Kodi's precedence ladder, and the probe
+a playback saves (MEDIA) replaces the whole set at or below itself; the
+flags would go with the rows after the first play, with the request long
+acknowledged and withdrawn. So the rows this handler aligns are stamped
+NFO, which is what the server's statement about a file amounts to, and
+which Kodi keeps against a probe.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from companion import paths
+from companion import paths, schema
 from companion.contract import Request
 from companion.db import Database
 from companion.handlers.base import Context, Handler, Refused
@@ -22,6 +30,8 @@ from companion.log import Logger
 LOG = Logger(__name__)
 
 FAMILY = "videoMetadata"
+
+STREAM_NAMES = {STREAM_AUDIO: "audio", STREAM_SUBTITLE: "subtitle"}
 
 
 def _owner_id(request: Request, key: str) -> int:
@@ -88,7 +98,14 @@ class SeasonPlot(Handler):
             found = video.season(season_id)
             if found is None:
                 raise Refused("season row %d is gone" % season_id)
-            if not paths.owned(found[1], context.namespace):
+            # Owned when every path the show is linked to is Kofin's. A show
+            # Kodi merged with a local source has a path of each, and the
+            # season is then the user's as much as the server's: refused
+            # every time, not on whichever row happened to come back first.
+            linked = found[1]
+            if not linked or not all(
+                paths.owned(path, context.namespace) for path in linked
+            ):
                 raise Refused("not owned: season %d" % season_id)
             if found[2] != plot:
                 video.set_season_plot(season_id, plot)
@@ -133,20 +150,57 @@ class StreamFlags(Handler):
             raise Refused("not owned: %s %d" % (media, media_id))
         return int(found[0])
 
+    @staticmethod
+    def _source(context: Context) -> int:
+        source = schema.STREAM_SOURCE_NFO.get(context.version("video"))
+        if source is None:
+            raise Refused(
+                "gate: no stream source for MyVideos v%s" % context.version("video")
+            )
+        return source
+
+    @staticmethod
+    def _aligned(
+        video: Video, file_id: int, wanted: Dict[int, List[int]]
+    ) -> Tuple[List[Tuple[int, int, Optional[int], int]], str]:
+        """[(rowid, iFlags, iSource, the bits wanted)] for every stream the
+        request names, and the mismatch that stops it, if any. Flags are
+        matched to rows by position, so a count that differs matches
+        nothing: a prefix written and called done would leave the streams
+        filed later without the bits the request named for them."""
+        aligned: List[Tuple[int, int, Optional[int], int]] = []
+        for stream_type, flags in wanted.items():
+            rows = video.stream_rows(file_id, stream_type)
+            if len(rows) != len(flags):
+                return [], "%d %s stream(s) filed, %d named" % (
+                    len(rows),
+                    STREAM_NAMES[stream_type],
+                    len(flags),
+                )
+            for (rowid, current, source), bits in zip(rows, flags):
+                aligned.append((rowid, current or 0, source, bits))
+        return aligned, ""
+
     def apply(self, request: Request, context: Context) -> Dict[str, Any]:
         wanted = self._wanted(request)
+        source = self._source(context)
         written = 0
         with Database("video") as db:
             video = Video(db.cursor)
             file_id = self._file(request, video, context)
-            for stream_type, flags in wanted.items():
-                rows = video.stream_rows(file_id, stream_type)
-                for (rowid, current), bits in zip(rows, flags):
-                    if (current or 0) != bits:
-                        video.set_stream_flags(rowid, bits)
-                        written += 1
+            aligned, mismatch = self._aligned(video, file_id, wanted)
+            if mismatch:
+                # Refused, not retried every thirty seconds: the request
+                # stays open, it is served again at every wake, and a count
+                # that never comes to match (a probe that replaced the rows
+                # before they were aligned) is not worth a poll loop.
+                raise Refused(mismatch)
+            for rowid, current, stamped, bits in aligned:
+                if current != bits or stamped != source:
+                    video.set_stream_flags(rowid, bits, source)
+                    written += 1
         if written:
-            LOG.info("file %d: %d stream flag(s) written", file_id, written)
+            LOG.info("file %d: %d stream row(s) written", file_id, written)
         return {"fileid": file_id}
 
     def withdraw(self, entry: Entry, context: Context) -> None:
@@ -158,14 +212,16 @@ class StreamFlags(Handler):
             video = Video(db.cursor)
             try:
                 file_id = self._file(request, video, context)
+                source = self._source(context)
             except Refused:
                 return False
-            for stream_type, flags in wanted.items():
-                rows = video.stream_rows(file_id, stream_type)
-                for (_rowid, current), bits in zip(rows, flags):
-                    if (current or 0) != bits:
-                        return False
-        return True
+            aligned, mismatch = self._aligned(video, file_id, wanted)
+            if mismatch:
+                return False
+            return all(
+                current == bits and stamped == source
+                for _rowid, current, stamped, bits in aligned
+            )
 
 
 class RemoveSet(Handler):

@@ -62,6 +62,7 @@ def test_every_supported_version_has_a_fixture_and_its_keyed_constants():
     for version in schema.SUPPORTED["video"]:
         assert version in schema.EXTRA_ITEM_TYPE
         assert version in schema.SEASON_HAS_PLOT
+        assert version in schema.STREAM_SOURCE_NFO
     for version in schema.SUPPORTED["texture"]:
         assert version in schema.CHAPTER_ART_WRAPPED
     import os

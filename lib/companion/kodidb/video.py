@@ -51,9 +51,14 @@ class Video:
     # -- seasons ---------------------------------------------------------------
 
     def season(self, season_id):
-        """(idShow, the show's path, plot) of a season, or None."""
-        self.cursor.execute(QU.get_season_show_path, (season_id,))
-        return self.cursor.fetchone()
+        """(idShow, every path its show is linked to, plot) of a season, or
+        None. Every path, not the first one returned: a show merged with
+        another source has a row for each, in no promised order."""
+        self.cursor.execute(QU.get_season_show_paths, (season_id,))
+        rows = self.cursor.fetchall()
+        if not rows:
+            return None
+        return (rows[0][0], [row[1] for row in rows if row[1]], rows[0][2])
 
     def set_season_plot(self, season_id, plot):
         self.cursor.execute(QU.update_season_plot, (plot, season_id))
@@ -61,13 +66,13 @@ class Video:
     # -- stream flags ----------------------------------------------------------
 
     def stream_rows(self, file_id, stream_type):
-        """[(rowid, iFlags)] of a file's streams of one type, in the order
-        the scanner filed them, which is the order Kodi reads them back."""
+        """[(rowid, iFlags, iSource)] of a file's streams of one type, in the
+        order the scanner filed them, which is the order Kodi reads them back."""
         self.cursor.execute(QU.get_stream_rows, (file_id, stream_type))
         return self.cursor.fetchall()
 
-    def set_stream_flags(self, rowid, flags):
-        self.cursor.execute(QU.update_stream_flags, (flags, rowid))
+    def set_stream_flags(self, rowid, flags, source):
+        self.cursor.execute(QU.update_stream_flags, (flags, source, rowid))
 
     # -- sets ------------------------------------------------------------------
 

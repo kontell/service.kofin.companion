@@ -5,10 +5,17 @@ S35 and A03).
 Kofin stages the images in its own profile and names the exact dynpath of
 the play; the key per chapter is this handler's (``kodidb/texture.py``, per
 Textures schema), the file is copied into ``Thumbnails/`` at the CRC path
-and the row pair written. A withdrawn request removes rows and files; a
-start sweeps rows carrying the document's device id that no request names,
+and the row pair written. A withdrawn request removes rows and files, and
+so does a request that comes back changed, before its new form is applied
+(the reconciler withdraws the earlier form). Once per process, rows
+carrying the document's device id that no ledger entry names are swept,
 which is what a crash leaves. A key that does not carry the device id is
 not Kofin's and is never touched.
+
+A file in ``Thumbnails/`` without its row is invisible to all of that: the
+sweep finds files through rows. So every chapter is read before anything
+is copied, the rows go in one short transaction after the files exist,
+and a call that does not commit takes the files it copied with it.
 """
 
 import os
@@ -50,18 +57,24 @@ class ChapterArt(Handler):
                 "gate: no chapter key form for Textures v%s"
                 % context.version("texture")
             )
+        parsed: List[Tuple[int, str, int, int]] = []
+        for chapter in chapters:
+            try:
+                parsed.append(
+                    (
+                        int(chapter["n"]),
+                        str(chapter["file"]),
+                        int(chapter.get("width") or 0),
+                        int(chapter.get("height") or 0),
+                    )
+                )
+            except (AttributeError, KeyError, TypeError, ValueError) as error:
+                raise Refused("malformed chapter: %s" % error) from error
         directory = thumbnails_dir()
-        keys: List[Tuple[str, str]] = []
-        with Database("texture") as db:
-            cache = TextureCache(db.cursor)
-            for chapter in chapters:
-                try:
-                    number = int(chapter["n"])
-                    source = str(chapter["file"])
-                    width = int(chapter.get("width") or 0)
-                    height = int(chapter.get("height") or 0)
-                except (KeyError, TypeError, ValueError) as error:
-                    raise Refused("malformed chapter: %s" % error) from error
+        tiles: List[Tuple[str, str, int, int]] = []
+        copied: List[str] = []
+        try:
+            for number, source, width, height in parsed:
                 if not os.path.isfile(source):
                     LOG.debug("chapter %d image missing at %s", number, source)
                     continue
@@ -69,13 +82,28 @@ class ChapterArt(Handler):
                 rel = cached_rel_path(key)
                 target = os.path.join(directory, rel)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
+                fresh = not os.path.exists(target)
                 shutil.copyfile(source, target)
-                cache.add(key, rel, width, height)
-                keys.append((key, rel))
-        if not keys:
-            raise Refused("no chapter image could be read")
-        LOG.info("chapter art %s: %d tile(s) seeded", request.item, len(keys))
-        return {"item": request.item, "keys": [list(pair) for pair in keys]}
+                if fresh:
+                    copied.append(target)
+                tiles.append((key, rel, width, height))
+            if not tiles:
+                raise Refused("no chapter image could be read")
+            # The row is the publish step: after its file, and all of them in
+            # one transaction that holds the database no longer than it takes.
+            with Database("texture") as db:
+                cache = TextureCache(db.cursor)
+                for key, rel, width, height in tiles:
+                    cache.add(key, rel, width, height)
+        except BaseException:
+            for target in copied:
+                _remove_file(target)
+            raise
+        LOG.info("chapter art %s: %d tile(s) seeded", request.item, len(tiles))
+        return {
+            "item": request.item,
+            "keys": [[key, rel] for key, rel, _width, _height in tiles],
+        }
 
     def withdraw(self, entry: Entry, context: Context) -> None:
         keys = entry.data.get("keys") or []
@@ -109,26 +137,20 @@ class ChapterArt(Handler):
         known = {
             key for entry in entries for key, _rel in (entry.data.get("keys") or [])
         }
-        removed = 0
-        directory = thumbnails_dir()
+        removed: List[Tuple[str, str]] = []
         with Database("texture") as db:
             cache = TextureCache(db.cursor)
             for pattern in (
                 "chapter://%%%s%%" % context.device,
                 "image://video@%%%s%%" % context.device,
             ):
-                db.cursor.execute(
-                    "SELECT url, cachedurl FROM texture WHERE url LIKE ?", (pattern,)
-                )
-                for url, cachedurl in db.cursor.fetchall():
-                    if url in known:
-                        continue
-                    cache.remove(url)
-                    _remove_file(os.path.join(directory, cachedurl))
-                    removed += 1
+                removed.extend(cache.remove_like(pattern, keep=known))
+        directory = thumbnails_dir()
+        for _url, cachedurl in removed:
+            _remove_file(os.path.join(directory, cachedurl))
         if removed:
-            LOG.info("swept %d stale chapter tile(s)", removed)
-        return removed
+            LOG.info("swept %d stale chapter tile(s)", len(removed))
+        return len(removed)
 
 
 def _remove_file(path: str) -> None:

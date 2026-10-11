@@ -2,12 +2,12 @@
 status document (plan section 3.3 and 3.6)."""
 
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
-from companion import contract, indexes, journal, kodi, schema
+from companion import contract, kodi, schema, upkeep
 from companion.contract import Document, DocumentError, Request
 from companion.handlers.base import Context, Handler, Refused, Retry
-from companion.ledger import Entry, Ledger
+from companion.ledger import Entry, Ledger, LedgerError
 from companion.log import Logger
 
 LOG = Logger(__name__)
@@ -43,14 +43,10 @@ class Reconciler:
         self.busy = busy
         self.version = version
         self._last_idle: Optional[str] = None
-        # The journal mode each served database was last found in; asked
-        # again while any of them is not WAL yet (journal.ensure).
-        self._journal: Dict[str, str] = {}
-        self._journal_settled = False
-        # The indexes each served database has of the ones asked of it
-        # (indexes.ensure), asked again until all are there.
-        self._indexes: Dict[str, Any] = {}
-        self._indexes_settled = False
+        # Whether the handlers' leftovers have been swept in this process.
+        self._swept = False
+        # kind -> (the database version tended, what was found): see _tend.
+        self._upkeep: Dict[str, Tuple[int, upkeep.Upkeep]] = {}
 
     # -- the run ----------------------------------------------------------------
 
@@ -74,6 +70,16 @@ class Reconciler:
             )
             self._idle(report)
             return report
+        if not self.ledger.loaded:
+            try:
+                self.ledger.load()
+            except LedgerError as error:
+                # Nothing is applied or withdrawn against a ledger that could
+                # not be read, and it is not saved over; asked again each run.
+                report["idle"] = str(error)
+                LOG.warning("ledger not read: %s", error)
+                self._idle(report)
+                return report
         try:
             document = contract.read_document(self.requests_path)
         except DocumentError as error:
@@ -91,23 +97,32 @@ class Reconciler:
             return report
         self._last_idle = None
         report["generation"] = document.generation
+        schema.reset_cache()
         gate = schema.gate_report()
         report["gate"] = gate
         busy = self.busy()
         report["busy"] = busy
-        if not busy and not self._journal_settled:
-            # Kodi's databases in WAL mode, before anything is written.
-            self._journal = journal.ensure(gate)
-            self._journal_settled = journal.settled(self._journal, gate)
-        report["journal"] = dict(self._journal)
-        if not busy and not self._indexes_settled:
-            self._indexes = indexes.ensure(gate)
-            self._indexes_settled = indexes.settled(self._indexes, gate)
-        report["indexes"] = dict(self._indexes)
+        self._tend(gate, busy)
+        report["journal"] = {
+            kind: found.journal or found.state
+            for kind, (_version, found) in sorted(self._upkeep.items())
+        }
+        report["indexes"] = {
+            kind: list(found.indexes)
+            for kind, (_version, found) in sorted(self._upkeep.items())
+            if upkeep.INDEXES.get(kind)
+        }
+        report["upkeep"] = {
+            kind: found.state
+            for kind, (_version, found) in sorted(self._upkeep.items())
+        }
         context = Context(document.namespace, document.device, gate)
         outcomes: Dict[str, Dict[str, str]] = {}
-        if trigger == "start" and not busy:
-            report["swept"] = self._sweep(context)
+        if not self._swept and context.device:
+            swept = self._sweep(context)
+            if swept is not None:
+                report["swept"] = swept
+                self._swept = True
         self._withdraw_stale(document, context, busy, outcomes)
         for request in contract.list_requests(document):
             outcomes[request.id] = self._serve(request, context, busy)
@@ -122,9 +137,41 @@ class Reconciler:
 
     # -- the steps --------------------------------------------------------------
 
-    def _sweep(self, context: Context) -> Dict[str, int]:
-        """Each handler's leftovers from a crash, once per generation."""
+    def _tend(self, gate: Dict[str, Dict[str, Any]], busy: bool) -> None:
+        """Each served database once: WAL and its indexes (``upkeep.tend``).
+
+        Once per database and version, not once per process: a database the
+        gate did not serve at the first run (Kodi had not created it yet)
+        is tended when it appears, and one Kodi has upgraded is tended
+        again, since an upgrade copies the file and drops every index. A
+        database that was busy is asked again; one that failed is not, and
+        said so once. Never while the library is scanning."""
+        for kind in schema.PREFIXES:
+            entry = gate.get(kind) or {}
+            if not entry.get("ok"):
+                self._upkeep.pop(kind, None)
+                continue
+            version = int(entry["version"])
+            known = self._upkeep.get(kind)
+            if (
+                known is not None
+                and known[0] == version
+                and known[1].state != upkeep.BUSY
+            ):
+                continue
+            if busy:
+                continue
+            self._upkeep[kind] = (version, upkeep.tend(kind))
+
+    def _sweep(self, context: Context) -> Optional[Dict[str, int]]:
+        """Each handler's leftovers from a crash, once per process: at the
+        first wake whose document names the device, since a sweep is keyed
+        by it and a companion can start before Kofin has published. Not
+        held back by a library scan, which writes other databases than the
+        ones a sweep cleans. None when a handler's sweep failed, and then
+        the next wake tries again."""
         swept: Dict[str, int] = {}
+        complete = True
         for kind, handler in self.handlers.items():
             if schema.gate_refusal(context.gate, handler.needs) is not None:
                 continue
@@ -133,7 +180,8 @@ class Reconciler:
                 swept[kind] = handler.sweep(context, entries)
             except Exception:
                 LOG.exception("sweep of %s failed", kind)
-        return swept
+                complete = False
+        return swept if complete else None
 
     def _withdraw_stale(
         self,
@@ -158,19 +206,34 @@ class Reconciler:
                     WAITING, "withdrawal waits for the scan", entry.hash
                 )
                 continue
-            try:
-                handler.withdraw(entry, context)
-            except Retry as error:
-                outcomes[request_id] = _outcome(WAITING, error.reason, entry.hash)
-                continue
-            except Exception:
-                LOG.exception("withdrawal of %s (%s) failed", request_id, entry.kind)
-                outcomes[request_id] = _outcome(
-                    WAITING, "withdrawal failed", entry.hash
-                )
-                continue
-            LOG.info("withdrew %s (%s)", request_id, entry.kind)
-            self.ledger.remove(request_id)
+            kept = self._withdraw(request_id, entry, handler, context)
+            if kept is not None:
+                outcomes[request_id] = kept
+
+    def _withdraw(
+        self, request_id: str, entry: Entry, handler: Handler, context: Context
+    ) -> Optional[Dict[str, str]]:
+        """Undo a ledger entry and forget it. None when it is gone; else the
+        outcome that says why it was kept. The entry leaves the ledger only
+        after its handler has undone it: it is the one record of those rows.
+
+        The gate is asked first, as it is before a write. A database this
+        build does not serve cannot be opened, and a withdrawal that failed
+        on it for that reason would be retried every thirty seconds for a
+        condition only a new build clears."""
+        refusal = schema.gate_refusal(context.gate, handler.needs)
+        if refusal is not None:
+            return _outcome(REFUSED, "withdrawal: %s" % refusal, entry.hash)
+        try:
+            handler.withdraw(entry, context)
+        except Retry as error:
+            return _outcome(WAITING, error.reason, entry.hash)
+        except Exception:
+            LOG.exception("withdrawal of %s (%s) failed", request_id, entry.kind)
+            return _outcome(WAITING, "withdrawal failed", entry.hash)
+        LOG.info("withdrew %s (%s)", request_id, entry.kind)
+        self.ledger.remove(request_id)
+        return None
 
     def _serve(self, request: Request, context: Context, busy: bool) -> Dict[str, str]:
         handler = self.handlers.get(request.kind)
@@ -194,10 +257,24 @@ class Reconciler:
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
         if busy:
             return _outcome(WAITING, "scan", request.hash)
+        if entry is not None and entry.hash != request.hash:
+            # The request's content moved. What its earlier form wrote is
+            # undone before the new form is written, so a row the request no
+            # longer names does not stay behind under an entry that has
+            # stopped listing it.
+            kept = self._withdraw(request.id, entry, handler, context)
+            if kept is not None:
+                return dict(kept, hash=request.hash)
+            entry = None
         try:
             data = handler.apply(request, context)
         except Refused as error:
-            self.ledger.remove(request.id)
+            if entry is not None:
+                # Applied before, no longer holding, and now refused: the
+                # earlier write is undone before its record goes.
+                kept = self._withdraw(request.id, entry, handler, context)
+                if kept is not None:
+                    return dict(kept, hash=request.hash)
             LOG.info("refused %s (%s): %s", request.id, request.kind, error.reason)
             return _outcome(REFUSED, error.reason, request.hash)
         except Retry as error:

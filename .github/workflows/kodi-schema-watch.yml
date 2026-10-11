@@ -1,6 +1,6 @@
 # Watch upstream Kodi for a database schema version newer than the gate.
 #
-# `sync/schema.py` refuses to write any MyVideos/MyMusic/Textures version not in
+# `lib/companion/schema.py` refuses to write any MyVideos/MyMusic/Textures version not in
 # its SUPPORTED map, so a Kodi that bumps one takes the companion's handlers for it offline
 # until fixtures exist and the version is admitted. Nothing else in this repo
 # watches upstream, so the first notice used to be a user on a new beta. This
@@ -15,7 +15,9 @@
 #    it from the Actions tab.
 # 3. `*/2` in the day-of-month field counts from the 1st, so a 31-day month is
 #    followed by runs on the 31st and the 1st. Harmless here: the job is
-#    idempotent, and a duplicate run files nothing new.
+#    idempotent, and a duplicate run files nothing new. Two runs at once are
+#    not: both would read the titles before either filed, so runs are
+#    serialized (`concurrency` below) and the second reads what the first filed.
 # 4. Dedupe is on the issue **title**, matched against open *and closed*
 #    issues carrying the label. A closed one means a human already decided
 #    (admitted the version, or declined it), so it must not be re-filed.
@@ -39,6 +41,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: kodi-schema-watch
+  cancel-in-progress: false
+
 env:
   LABEL: kodi-schema
 
@@ -48,6 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -91,9 +99,12 @@ jobs:
             --color BFD4F2 \
             --description "Upstream Kodi database schema version tracking"
 
-          # Titles already used, open or closed: the dedupe set.
-          gh issue list --label "$LABEL" --state all --limit 200 \
-            --json title --jq '.[].title' > seen.txt
+          # Titles already used, open or closed: the dedupe set. Every page
+          # of it: a closed issue that fell off a fixed limit would be filed
+          # again, which is the one thing the dedupe rule forbids.
+          gh api --paginate -X GET "repos/${GITHUB_REPOSITORY}/issues" \
+            -f labels="$LABEL" -f state=all -f per_page=100 \
+            --jq '.[] | select(has("pull_request") | not) | .title' > seen.txt
 
           jq -c '.[]' findings.json | while read -r finding; do
             title="$(jq -r '.title' <<<"$finding")"
