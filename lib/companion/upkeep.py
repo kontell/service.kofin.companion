@@ -93,7 +93,8 @@ INDEXES: Dict[str, Tuple[Tuple[str, str], ...]] = {
 
 class Upkeep(NamedTuple):
     # SETTLED: in WAL with every index asked of it. BUSY: something had the
-    # file, asked again. FAILED: it cannot be done to this file; said once.
+    # file, asked again. FAILED: it cannot be done to this file (an error
+    # that is no lock, or a WAL switch SQLite declined); said once.
     state: str
     # The journal mode the file was last seen in, or empty.
     journal: str
@@ -144,5 +145,14 @@ def tend(kind: str) -> Upkeep:
         return Upkeep(FAILED, journal, present)
     finally:
         conn.close()
-    done = journal == WAL and len(present) == len(wanted)
+    if journal != WAL:
+        # Declined, not locked: a lock raises and is handled above. SQLite
+        # answers the pragma with the mode it kept where the file cannot
+        # have a shared-memory file beside it (some network and FUSE
+        # mounts), and asking again at every reconcile changes nothing.
+        LOG.warning(
+            "%s database stays in %s journal mode: SQLite declined WAL", kind, journal
+        )
+        return Upkeep(FAILED, journal, present)
+    done = len(present) == len(wanted)
     return Upkeep(SETTLED if done else BUSY, journal, present)

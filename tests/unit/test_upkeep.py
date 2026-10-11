@@ -190,6 +190,47 @@ def test_a_database_that_cannot_be_tended_is_said_once_and_not_reopened(
     assert opens == ["MyVideos149.db"]
 
 
+def test_a_declined_wal_switch_is_said_once_and_keeps_its_indexes(
+    rig, opens, monkeypatch
+):
+    """SQLite declines WAL without an error where the file cannot have a
+    shared-memory file beside it: the pragma answers with the mode it kept.
+    That is not a lock, and asking again at every reconcile would reopen
+    the file and log the same line for ever. The indexes do not depend on
+    the journal and are made all the same."""
+    worker, profile, kodi = rig
+
+    class Declining:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, statement):
+            if statement == "PRAGMA journal_mode=WAL":
+                statement = "PRAGMA journal_mode"
+            return self._conn.execute(statement)
+
+        def commit(self):
+            self._conn.commit()
+
+        def close(self):
+            self._conn.close()
+
+    counting = upkeep.sqlite3.connect
+    monkeypatch.setattr(
+        upkeep.sqlite3,
+        "connect",
+        lambda path, timeout=5.0: Declining(counting(path, timeout)),
+    )
+    report = worker.run("start")
+    assert report["upkeep"] == {"video": "failed"}
+    assert report["journal"] == {"video": "delete"}
+    assert report["indexes"] == {"video": sorted(n for n, _ in upkeep.INDEXES["video"])}
+    worker.run("timer")
+    worker.run("timer")
+    assert opens == ["MyVideos149.db"]
+    assert _mode(profile / "Database" / "MyVideos149.db") == "delete"
+
+
 def test_kodis_name_lookups_search_the_new_indexes(rig):
     """AddActor and AddToTable look a name up with LIKE. Each table has a
     unique index on the name, but a BINARY one, which LIKE cannot use."""
