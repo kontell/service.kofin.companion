@@ -71,9 +71,22 @@ if ! rpc '{"jsonrpc":"2.0","id":1,"method":"JSONRPC.Ping"}' 2 | grep -q '"pong"'
     exit 0
 fi
 
+# curl succeeds on a JSON-RPC error reply, so the reply is read: a refused
+# disable leaves the old service running, a refused enable leaves none.
+set_enabled() {
+    reply="$(rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Addons.SetAddonEnabled\",\"params\":{\"addonid\":\"$ADDON_ID\",\"enabled\":$1}}")" || reply=""
+    case "$reply" in
+        *'"result":"OK"'*) ;;
+        *)
+            echo "installed to $DEST, but Kodi refused enabled=$1 for $ADDON_ID: ${reply:-no reply}" >&2
+            exit 1
+            ;;
+    esac
+}
+
 builtin 'UpdateLocalAddons()'
 sleep 2
-rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Addons.SetAddonEnabled\",\"params\":{\"addonid\":\"$ADDON_ID\",\"enabled\":false}}" > /dev/null
+set_enabled false
 sleep 2
-rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Addons.SetAddonEnabled\",\"params\":{\"addonid\":\"$ADDON_ID\",\"enabled\":true}}" > /dev/null
+set_enabled true
 echo "installed and enabled $ADDON_ID ($TARGET Kodi on :$RPC_PORT)"

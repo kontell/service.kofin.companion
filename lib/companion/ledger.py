@@ -2,10 +2,15 @@
 crash and a reset converge the same way: the ledger is reconciled against
 the document at every wake."""
 
+import json
 import time
 from typing import Any, Dict, NamedTuple, Optional
 
 from companion import contract
+
+
+class LedgerError(Exception):
+    """A ledger that exists and cannot be read as one."""
 
 
 class Entry(NamedTuple):
@@ -23,28 +28,48 @@ class Ledger:
     def __init__(self, path: str) -> None:
         self.path = path
         self.entries: Dict[str, Entry] = {}
+        self.loaded = False
         self._dirty = False
 
     def load(self) -> None:
+        """Read the ledger. No file is an empty ledger.
+
+        A file that is there and is not a version-1 map of entries raises
+        :class:`LedgerError`, as the request document does for the same
+        reason: read as empty, the next apply would save over the only
+        record of the rows a withdrawal has to undo.
+        """
         self.entries = {}
-        raw = contract.read_json(self.path)
-        if raw is None or raw.get("v") != contract.LEDGER_VERSION:
+        self.loaded = False
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except FileNotFoundError:
+            self.loaded = True
             return
+        except (OSError, ValueError) as error:
+            raise LedgerError("unreadable ledger: %s" % error) from error
+        if not isinstance(raw, dict) or raw.get("v") != contract.LEDGER_VERSION:
+            raise LedgerError(
+                "ledger is not a version %s ledger" % contract.LEDGER_VERSION
+            )
         stored = raw.get("requests")
-        if not isinstance(stored, dict):
-            return
+        if not isinstance(stored, dict) or not all(
+            isinstance(entry, dict) for entry in stored.values()
+        ):
+            raise LedgerError("ledger entries are malformed")
         for request_id, entry in stored.items():
-            if not isinstance(entry, dict):
-                continue
             self.entries[str(request_id)] = Entry(
                 str(entry.get("kind") or ""),
                 str(entry.get("hash") or ""),
                 dict(entry.get("data") or {}),
                 str(entry.get("at") or ""),
             )
+        self.loaded = True
 
     def save(self) -> None:
-        if not self._dirty:
+        # Never over a ledger that was not read.
+        if not self._dirty or not self.loaded:
             return
         contract.write_json(
             self.path,

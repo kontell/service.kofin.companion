@@ -49,10 +49,18 @@ class Database:
 
     def __enter__(self) -> "Database":
         self.path = resolve_path(self.kind)
-        self.conn = sqlite3.connect(self.path, timeout=self.timeout)
-        if self.kind in KINDS:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-        self.cursor = self.conn.cursor()
+        conn = sqlite3.connect(self.path, timeout=self.timeout)
+        try:
+            if self.kind in KINDS:
+                conn.execute("PRAGMA journal_mode=WAL")
+            self.cursor = conn.cursor()
+        except BaseException:
+            # __exit__ does not run for a block that never began, and the
+            # pragma is the call that fails while Kodi holds the file: left
+            # open, the connection keeps its lock until it is collected.
+            conn.close()
+            raise
+        self.conn = conn
         LOG.debug("--->[ database: %s ] %s", self.kind, id(self.conn))
         return self
 
