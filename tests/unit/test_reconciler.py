@@ -334,3 +334,68 @@ def test_an_unserved_database_is_never_switched(rig, profile):
     report = worker.run("start")
     assert "music" not in report["journal"]
     assert _mode(path) == "delete"
+
+
+def _plan(path, statement):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        return [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + statement)]
+    finally:
+        conn.close()
+
+
+def test_kodis_name_lookups_get_the_indexes_they_scan_without(rig, profile):
+    """AddActor and AddToTable look a name up with LIKE, which no index of
+    Kodi's can serve: every cast member and tag of every item is a scan of
+    its table. The companion adds case-insensitive indexes beside Kodi's."""
+    import sqlite3
+
+    import companion.indexes as indexes
+
+    _, handler, ledger, worker, publish, status, kodi, _ = rig
+    path = profile / "Database" / "MyVideos149.db"
+    lookups = {
+        "actor": "select actor_id from actor where name like 'Somebody'",
+        "tag": "select tag_id from tag where name like 'noir'",
+        "studio": "select studio_id from studio where name like 'Gaumont'",
+    }
+    wanted = sorted("ix_kofin_%s_nocase" % table for table in lookups)
+    for lookup in lookups.values():
+        assert any(step.startswith("SCAN") for step in _plan(path, lookup))
+    kodi.scanning = True
+    assert worker.run("start")["indexes"] == {}
+    kodi.scanning = False
+    report = worker.run("timer")
+    assert report["indexes"] == {"video": wanted}
+    assert status()["indexes"] == {"video": wanted}
+    for table, lookup in lookups.items():
+        (step,) = _plan(path, lookup)
+        assert step.startswith("SEARCH") and "ix_kofin_%s_nocase" % table in step
+    # Kodi's own index is still there, and the lookup still ignores case.
+    conn = sqlite3.connect(str(path))
+    try:
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='actor'"
+            )
+        }
+        assert {"ix_actor_1", "ix_kofin_actor_nocase"} <= names
+        conn.execute("INSERT INTO actor (name, art_urls) VALUES ('Jean Reno', '')")
+        conn.commit()
+        assert conn.execute(
+            "select actor_id from actor where name like 'jean reno'"
+        ).fetchall()
+    finally:
+        conn.close()
+    # Settled: asked once.
+    calls = []
+    original = indexes.ensure
+    indexes.ensure = lambda gate: calls.append(1) or original(gate)
+    try:
+        worker.run("timer")
+    finally:
+        indexes.ensure = original
+    assert calls == []

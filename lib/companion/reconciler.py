@@ -4,7 +4,7 @@ status document (plan section 3.3 and 3.6)."""
 import time
 from typing import Any, Callable, Dict, Optional
 
-from companion import contract, journal, kodi, schema
+from companion import contract, indexes, journal, kodi, schema
 from companion.contract import Document, DocumentError, Request
 from companion.handlers.base import Context, Handler, Refused, Retry
 from companion.ledger import Entry, Ledger
@@ -47,6 +47,10 @@ class Reconciler:
         # again while any of them is not WAL yet (journal.ensure).
         self._journal: Dict[str, str] = {}
         self._journal_settled = False
+        # The indexes each served database has of the ones asked of it
+        # (indexes.ensure), asked again until all are there.
+        self._indexes: Dict[str, Any] = {}
+        self._indexes_settled = False
 
     # -- the run ----------------------------------------------------------------
 
@@ -96,6 +100,10 @@ class Reconciler:
             self._journal = journal.ensure(gate)
             self._journal_settled = journal.settled(self._journal, gate)
         report["journal"] = dict(self._journal)
+        if not busy and not self._indexes_settled:
+            self._indexes = indexes.ensure(gate)
+            self._indexes_settled = indexes.settled(self._indexes, gate)
+        report["indexes"] = dict(self._indexes)
         context = Context(document.namespace, document.device, gate)
         outcomes: Dict[str, Dict[str, str]] = {}
         if trigger == "start" and not busy:

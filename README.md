@@ -26,6 +26,10 @@ Every write is to a row Kofin owns, read back before the write; nothing is writt
 
 Besides the requests, the companion switches the Kodi databases its gate serves to SQLite's WAL journal mode, once, at the first reconcile that finds the library idle (`lib/companion/journal.py`). Kodi keeps whatever mode a database file was left in and creates its own as rollback journals, where every statement of a library setter is a journal file written, synced and removed; Kofin's SQL build has always switched them, and the API build may not open them at all. On a Raspberry Pi 3 with its databases on an SD card the difference for a first music import was `AudioLibrary.SetSongDetails` at 17 ms a call instead of 133 ms, `SetArtistDetails` at 14 ms instead of 148 ms, and the scan itself a fifth shorter. The mode is reported under `journal` in the status document.
 
+## Name indexes
+
+Kodi's scanner finds every cast member, director and writer of an item with `select actor_id from actor where name like '<name>'` (`CVideoDatabase::AddActor`), and every tag and studio with the same statement on its table (`AddToTable`). LIKE ignores case, the unique index on `actor.name` does not, and `tag` and `studio` have no index on the name, so each lookup is a scan of the table and an import is quadratic in its cast. The companion adds `ix_kofin_actor_nocase`, `ix_kofin_tag_nocase` and `ix_kofin_studio_nocase` (`name COLLATE NOCASE`) beside Kodi's indexes at the first idle reconcile (`lib/companion/indexes.py`), and reports them under `indexes` in the status document. On a Raspberry Pi 3, against a library of 1,788 movies and 4,300 episodes, Kodi's statements went from 28.2 ms to 0.15 ms on `actor` (38,284 rows), 6.1 ms to 0.18 ms on `tag` and 2.3 ms to 0.21 ms on `studio`, returning the same rows. A Kodi schema upgrade drops every index, so they are asked for again at each start.
+
 ## Development
 
 ```bash

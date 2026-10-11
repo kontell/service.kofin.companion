@@ -2,3 +2,4 @@ v0.1.0
 - First release: the service, the schema gate (MyVideos 149, MyMusic 84, Textures 14), the request document reader, the ledger and the status report.
 - Request kinds served: group_versions, retire_assets, chapter_art, episode_tags, season_plot, stream_flags, remove_set.
 - Kodi's gated databases are switched to WAL journal mode at the first idle reconcile, as Kofin's SQL build does for the ones it writes.
+- The video database gets case-insensitive indexes on actor, tag and studio names, which Kodi's scanner looks up with LIKE and its own indexes cannot serve.
