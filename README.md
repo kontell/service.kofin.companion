@@ -22,6 +22,10 @@ The plan it is built to is `docs/companion-addon-plan.md` in the Kofin repositor
 
 Every write is to a row Kofin owns, read back before the write; nothing is written while a scan runs; a withdrawn request is undone where the write was per play or per state and stands where it edited Kodi's own row. The status document under the add-on's profile data says what was done, what waits and what was refused, and why.
 
+## Journal mode
+
+Besides the requests, the companion switches the Kodi databases its gate serves to SQLite's WAL journal mode, once, at the first reconcile that finds the library idle (`lib/companion/journal.py`). Kodi keeps whatever mode a database file was left in and creates its own as rollback journals, where every statement of a library setter is a journal file written, synced and removed; Kofin's SQL build has always switched them, and the API build may not open them at all. On a Raspberry Pi 3 with its databases on an SD card the difference for a first music import was `AudioLibrary.SetSongDetails` at 17 ms a call instead of 133 ms, `SetArtistDetails` at 14 ms instead of 148 ms, and the scan itself a fifth shorter. The mode is reported under `journal` in the status document.
+
 ## Development
 
 ```bash

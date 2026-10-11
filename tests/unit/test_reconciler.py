@@ -257,3 +257,80 @@ def test_a_start_sweeps_each_handlers_leftovers_once(rig):
     kodi.scanning = True
     report = worker.run("start")
     assert "swept" not in report
+
+
+def _mode(path):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        return conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_the_served_databases_are_switched_to_wal_once_the_library_is_idle(
+    rig, profile
+):
+    """Kodi leaves a database in the journal mode it was made in, and the
+    API build may not open one: the companion switches every database its
+    gate serves, with no request needed, and not during a scan."""
+    _, handler, ledger, worker, publish, status, kodi, _ = rig
+    database = profile / "Database"
+    kodifixtures.create_music_db(str(database / "MyMusic84.db"))
+    assert _mode(database / "MyVideos149.db") == "delete"
+    assert _mode(database / "MyMusic84.db") == "delete"
+    kodi.scanning = True
+    report = worker.run("start")
+    assert report["journal"] == {}
+    assert _mode(database / "MyMusic84.db") == "delete"
+    kodi.scanning = False
+    report = worker.run("timer")
+    assert report["journal"] == {"video": "wal", "music": "wal"}
+    assert _mode(database / "MyVideos149.db") == "wal"
+    assert _mode(database / "MyMusic84.db") == "wal"
+    assert status()["journal"] == {"video": "wal", "music": "wal"}
+    # Settled: no later reconcile opens a database for it.
+    import companion.journal as journal
+
+    calls = []
+    original = journal.ensure
+    journal.ensure = lambda gate: calls.append(1) or original(gate)
+    try:
+        assert worker.run("timer")["journal"] == {"video": "wal", "music": "wal"}
+    finally:
+        journal.ensure = original
+    assert calls == []
+
+
+def test_a_locked_database_keeps_its_mode_and_is_asked_again(rig, profile, monkeypatch):
+    import sqlite3
+
+    import companion.journal as journal
+
+    _, handler, ledger, worker, publish, status, kodi, _ = rig
+    monkeypatch.setattr(journal, "TIMEOUT", 0.05)
+    path = profile / "Database" / "MyVideos149.db"
+    holder = sqlite3.connect(str(path))
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        report = worker.run("start")
+        assert report["journal"] == {"video": "busy"}
+    finally:
+        holder.rollback()
+        holder.close()
+    assert _mode(path) == "delete"
+    assert worker.run("timer")["journal"] == {"video": "wal"}
+    assert _mode(path) == "wal"
+
+
+def test_an_unserved_database_is_never_switched(rig, profile):
+    _, handler, ledger, worker, publish, status, kodi, _ = rig
+    from companion import schema
+
+    path = profile / "Database" / "MyMusic99.db"
+    kodifixtures.create_music_db(str(path))
+    schema.reset_cache()
+    report = worker.run("start")
+    assert "music" not in report["journal"]
+    assert _mode(path) == "delete"
