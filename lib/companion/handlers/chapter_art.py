@@ -53,6 +53,14 @@ class ChapterArt(Handler):
     kind = "chapter_art"
     family = "chapterArt"
     needs = ("texture",)
+    # The chapters dialog is opened while the item plays, and what is not
+    # in the texture database when it opens is a blank tile until it is
+    # closed and opened again. The request used to be served after every
+    # standing request of the pass, each one a database opened to confirm
+    # it, and not at all while a scan ran: thirty seconds later, or when
+    # the scan ended. It writes the texture database and Thumbnails/, which
+    # Kodi's image cache writes at any moment, scan or no scan.
+    urgent = True
 
     def apply(self, request: Request, context: Context) -> Dict[str, Any]:
         dynpath = str(request.fields.get("dynpath") or "")

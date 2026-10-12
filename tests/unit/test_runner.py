@@ -75,3 +75,46 @@ def test_a_ping_during_a_reconcile_is_not_lost(monkeypatch):
     monkeypatch.setattr(runner, "build", lambda: Worker())
     runner.run()
     assert events == [("start", 0), ("ping", 0)]
+
+
+def test_a_ping_that_arrives_in_the_wait_is_acted_on_within_a_quarter_second(
+    monkeypatch,
+):
+    """Kodi delivers the ping inside the wait, and the wait then runs to
+    its end. In slices of a second, a playing item's chapter images were
+    looked at up to a second after Kofin asked for them."""
+    import threading
+
+    slices = []
+    events = []
+
+    class FakeMonitor:
+        def __init__(self):
+            self.wake = threading.Event()
+            self.trigger = "timer"
+
+        def abortRequested(self):
+            return len(events) >= 2
+
+        def waitForAbort(self, seconds):
+            if len(events) >= 2:
+                return True
+            slices.append(seconds)
+            if len(slices) == 3:
+                # The ping lands during the third slice.
+                self.trigger = "ping"
+                self.wake.set()
+            return False
+
+    monitor = FakeMonitor()
+
+    class Worker:
+        def run(self, trigger):
+            events.append(trigger)
+            return {}
+
+    monkeypatch.setattr(runner, "Monitor", lambda: monitor)
+    monkeypatch.setattr(runner, "build", lambda: Worker())
+    runner.run()
+    assert events == ["start", "ping"]
+    assert slices == [runner.WAKE_SLICE] * 3 and runner.WAKE_SLICE <= 0.25

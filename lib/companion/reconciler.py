@@ -124,7 +124,10 @@ class Reconciler:
                 report["swept"] = swept
                 self._swept = True
         self._withdraw_stale(document, context, busy, outcomes)
-        for request in contract.list_requests(document):
+        # What a viewer is waiting on first; the rest in the document's order.
+        for request in sorted(
+            contract.list_requests(document), key=lambda r: not self._urgent(r.kind)
+        ):
             outcomes[request.id] = self._serve(request, context, busy)
         self.ledger.save()
         report["requests"] = outcomes
@@ -183,6 +186,10 @@ class Reconciler:
                 complete = False
         return swept if complete else None
 
+    def _urgent(self, kind: str) -> bool:
+        handler = self.handlers.get(kind)
+        return handler is not None and handler.urgent
+
     def _withdraw_stale(
         self,
         document: Document,
@@ -201,7 +208,7 @@ class Reconciler:
                     entry.kind,
                 )
                 continue
-            if busy:
+            if busy and not handler.urgent:
                 outcomes[request_id] = _outcome(
                     WAITING, "withdrawal waits for the scan", entry.hash
                 )
@@ -255,7 +262,7 @@ class Reconciler:
                 )
                 return _outcome(WAITING, "confirmation failed", request.hash)
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
-        if busy:
+        if busy and not handler.urgent:
             return _outcome(WAITING, "scan", request.hash)
         if entry is not None and entry.hash != request.hash:
             # The request's content moved. What its earlier form wrote is

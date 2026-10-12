@@ -43,6 +43,11 @@ class Handler:
     family: str = ""
     # The database kinds the handler writes; each must pass the gate.
     needs: Tuple[str, ...] = ()
+    # A viewer is waiting on it: served before every other request of a run,
+    # and neither applied nor withdrawn later because a library scan is
+    # running. Only for a kind that writes none of the databases a scan
+    # writes.
+    urgent: bool = False
 
     def apply(self, request: Request, context: Context) -> Dict[str, Any]:
         """Write the request; return what the ledger keeps for its withdrawal."""
