@@ -1,3 +1,6 @@
+v0.1.1
+- Chapter images appear sooner, and are no longer held back by a library scan.
+
 v0.1.0
 - First release, for Kofin's API build on Kodi 22 Piers.
 - Groups a movie's versions, retires versions and extras the server dropped, shows the server's chapter images, tags favourite episodes, writes season plots and stream flags, and removes emptied collections.
