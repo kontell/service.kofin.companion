@@ -17,6 +17,17 @@ WAITING = "waiting"
 REFUSED = "refused"
 
 
+# The databases a library scan writes. A request that needs one of them
+# is neither applied nor withdrawn while a scan runs or Kofin holds one; a
+# request that needs neither (the texture cache alone) is not held back, as
+# a sweep is not.
+SCANNED = frozenset(("video", "music"))
+
+
+def _deferred(handler: Handler, busy: bool) -> bool:
+    return busy and not SCANNED.isdisjoint(handler.needs)
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
@@ -124,7 +135,10 @@ class Reconciler:
                 report["swept"] = swept
                 self._swept = True
         self._withdraw_stale(document, context, busy, outcomes)
-        for request in contract.list_requests(document):
+        # What a viewer is waiting on first; the rest in the document's order.
+        for request in sorted(
+            contract.list_requests(document), key=lambda r: not self._urgent(r.kind)
+        ):
             outcomes[request.id] = self._serve(request, context, busy)
         self.ledger.save()
         report["requests"] = outcomes
@@ -183,6 +197,10 @@ class Reconciler:
                 complete = False
         return swept if complete else None
 
+    def _urgent(self, kind: str) -> bool:
+        handler = self.handlers.get(kind)
+        return handler is not None and handler.urgent
+
     def _withdraw_stale(
         self,
         document: Document,
@@ -201,7 +219,7 @@ class Reconciler:
                     entry.kind,
                 )
                 continue
-            if busy:
+            if _deferred(handler, busy):
                 outcomes[request_id] = _outcome(
                     WAITING, "withdrawal waits for the scan", entry.hash
                 )
@@ -249,13 +267,15 @@ class Reconciler:
             try:
                 if handler.confirm(request, entry, context):
                     return _outcome(DONE, "", request.hash)
+            except Retry as error:
+                return _outcome(WAITING, error.reason, request.hash)
             except Exception:
                 LOG.exception(
                     "confirmation of %s (%s) failed", request.id, request.kind
                 )
                 return _outcome(WAITING, "confirmation failed", request.hash)
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
-        if busy:
+        if _deferred(handler, busy):
             return _outcome(WAITING, "scan", request.hash)
         if entry is not None and entry.hash != request.hash:
             # The request's content moved. What its earlier form wrote is

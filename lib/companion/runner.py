@@ -17,6 +17,10 @@ LOG = Logger(__name__)
 # scan is retried sooner.
 POLL_SECONDS = 300.0
 RETRY_SECONDS = 30.0
+# How often the wait looks for a wake. Kodi delivers the ping inside the
+# wait, and the wait then runs to its end: a second of it was up to a second
+# before a playing item's chapter images were looked at.
+WAKE_SLICE = 0.25
 
 _SCAN_FINISHED = ("VideoLibrary.OnScanFinished", "AudioLibrary.OnScanFinished")
 
@@ -77,9 +81,9 @@ def run() -> None:
         delay = RETRY_SECONDS if reconciler.waiting(report) else POLL_SECONDS
         waited = 0.0
         while waited < delay and not monitor.wake.is_set():
-            if monitor.waitForAbort(1.0):
+            if monitor.waitForAbort(WAKE_SLICE):
                 LOG.info("---<<< companion")
                 return
-            waited += 1.0
+            waited += WAKE_SLICE
         trigger = monitor.trigger if monitor.wake.is_set() else "timer"
     LOG.info("---<<< companion")

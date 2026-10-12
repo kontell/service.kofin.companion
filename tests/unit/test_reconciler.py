@@ -231,6 +231,115 @@ def test_a_scan_defers_writes_but_not_confirmations(rig):
     assert handler.withdrawn == [{"rows": [1, 2]}]
 
 
+class UrgentHandler(FakeHandler):
+    """Like chapter art: first, and writing no database a scan writes."""
+
+    kind = "urgent"
+    urgent = True
+    needs = ("texture",)
+
+
+class UrgentVideoHandler(FakeHandler):
+    kind = "urgentvideo"
+    urgent = True
+
+
+def test_what_a_viewer_waits_on_is_served_first_and_through_a_scan(rig, profile):
+    """A playing item's chapter images came after every standing request of
+    the pass, each a database opened to confirm it, and not at all while a
+    scan ran: the chapters dialog showed blank tiles for that long."""
+    _, handler, ledger, worker, publish, _, kodi, _ = rig
+    kodifixtures.create_texture_db(str(profile / "Database" / "Textures14.db"))
+    urgent = UrgentHandler()
+    worker.handlers["urgent"] = urgent
+    order = []
+    handler_apply, urgent_apply = handler.apply, urgent.apply
+    handler.apply = lambda request, context: (
+        order.append(request.id),
+        handler_apply(request, context),
+    )[1]
+    urgent.apply = lambda request, context: (
+        order.append(request.id),
+        urgent_apply(request, context),
+    )[1]
+    publish(
+        [
+            {"id": "f1", "kind": "fake"},
+            {"id": "f2", "kind": "fake"},
+            {"id": "u1", "kind": "urgent"},
+        ]
+    )
+    worker.run("ping")
+    assert order == ["u1", "f1", "f2"]
+
+    # Through a scan: the urgent kind is written, the others wait for it.
+    order.clear()
+    kodi.scanning = True
+    publish(
+        [
+            {"id": "f3", "kind": "fake"},
+            {"id": "u2", "kind": "urgent"},
+        ],
+        generation=2,
+    )
+    report = worker.run("ping")
+    assert order == ["u2"]
+    assert report["requests"]["u2"]["state"] == "done"
+    assert report["requests"]["f3"]["reason"] == "scan"
+    # u1 left the document: withdrawn at once, where f1 and f2 wait.
+    assert urgent.withdrawn == [{"rows": [1, 2]}] and ledger.get("u1") is None
+    assert handler.withdrawn == [] and ledger.get("f1") is not None
+    assert report["requests"]["f1"]["reason"] == "withdrawal waits for the scan"
+
+
+def test_urgent_is_order_and_a_video_write_still_waits_for_the_scan(rig):
+    """The flag once also meant "through a scan", which only a comment kept
+    off a handler that writes MyVideos. What waits is read off ``needs``."""
+    _, handler, ledger, worker, publish, _, kodi, _ = rig
+    urgent = UrgentVideoHandler()
+    worker.handlers["urgentvideo"] = urgent
+    order = []
+    handler_apply, urgent_apply = handler.apply, urgent.apply
+    handler.apply = lambda request, context: (
+        order.append(request.id),
+        handler_apply(request, context),
+    )[1]
+    urgent.apply = lambda request, context: (
+        order.append(request.id),
+        urgent_apply(request, context),
+    )[1]
+    publish([{"id": "f1", "kind": "fake"}, {"id": "v1", "kind": "urgentvideo"}])
+    worker.run("ping")
+    assert order == ["v1", "f1"]
+
+    order.clear()
+    kodi.scanning = True
+    publish([{"id": "v2", "kind": "urgentvideo"}], generation=2)
+    report = worker.run("ping")
+    assert order == [] and urgent.withdrawn == []
+    assert report["requests"]["v2"]["reason"] == "scan"
+    assert report["requests"]["v1"]["reason"] == "withdrawal waits for the scan"
+    assert ledger.get("v1") is not None
+    kodi.scanning = False
+    worker.run("timer")
+    assert order == ["v2"] and urgent.withdrawn == [{"rows": [1, 2]}]
+
+
+def test_a_confirmation_that_asks_to_wait_is_waiting_with_its_reason(rig):
+    _, handler, _, worker, publish, _, _, _ = rig
+    publish([{"id": "f1", "kind": "fake"}])
+    worker.run("ping")
+
+    def busy(request, entry, context):
+        raise Retry("texture database busy")
+
+    handler.confirm = busy
+    report = worker.run("timer")
+    assert report["requests"]["f1"]["state"] == "waiting"
+    assert report["requests"]["f1"]["reason"] == "texture database busy"
+    assert len(handler.applied) == 1
+
+
 def test_the_gate_is_asked_before_a_withdrawal(rig, profile):
     """A database this build does not serve cannot be opened to withdraw
     from either. That is a refusal with the gate's reason, the entry kept,

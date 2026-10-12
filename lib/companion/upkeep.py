@@ -56,7 +56,7 @@ database is tended again when the gate finds another version of it.
 import sqlite3
 from typing import Dict, List, NamedTuple, Tuple
 
-from companion import schema
+from companion import db, schema
 from companion.log import Logger
 
 LOG = Logger(__name__)
@@ -102,11 +102,6 @@ class Upkeep(NamedTuple):
     indexes: List[str]
 
 
-def _locked(error: sqlite3.Error) -> bool:
-    text = str(error).lower()
-    return "locked" in text or "busy" in text
-
-
 def tend(kind: str) -> Upkeep:
     """Switch one served database to WAL and give it its indexes, on one
     connection. What was learned before a failure is still reported: the
@@ -137,7 +132,7 @@ def tend(kind: str) -> Upkeep:
                 present = sorted(present + [name])
                 LOG.info("%s database: index %s created", kind, name)
     except sqlite3.Error as error:
-        if _locked(error):
+        if db.locked(error):
             # Kodi or a scan has it. It keeps what it has and is asked again.
             LOG.info("%s database is busy; its upkeep waits: %s", kind, error)
             return Upkeep(BUSY, journal, present)
