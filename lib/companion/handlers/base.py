@@ -9,6 +9,10 @@ from companion.ledger import Entry
 class Refused(Exception):
     """The request cannot be served as asked; Kofin reads the reason."""
 
+    # An answer, not a fault: the database block it leaves does not log it
+    # as an error (db.Database.__exit__).
+    expected = True
+
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -16,6 +20,8 @@ class Refused(Exception):
 
 class Retry(Exception):
     """Not now (a lock, a scan): tried again at the next wake."""
+
+    expected = True
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)

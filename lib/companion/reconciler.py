@@ -24,6 +24,24 @@ REFUSED = "refused"
 SCANNED = frozenset(("video", "music"))
 
 
+# How long a run goes on before it waits on the service's Monitor. Kodi
+# queues a callback for every announcement on every Monitor alive, in one
+# list for the whole process, and a callback leaves it only when the thread
+# that made the Monitor waits on it; every other Python thread walks past
+# what is left on each wait of its own, with the interpreter lock held. A
+# run of thousands of requests that never waited kept this add-on's share of
+# 4,400 "row removed" announcements at the front of that list, and every
+# add-on in Kodi stood still for minutes.
+GIVE_WAY_EVERY = 0.25
+
+# A refusal is asked of the database again after this long while its request
+# stands unchanged, and at once when a scan has finished or a setting has
+# changed. Asked on every wake, 5,632 refused requests were 5,632 databases
+# opened every time Kofin finished a pass.
+REFUSED_RETRY = 1800.0
+RECHECK_TRIGGERS = ("scan finished", "settings changed", "settings button")
+
+
 def _deferred(handler: Handler, busy: bool) -> bool:
     return busy and not SCANNED.isdisjoint(handler.needs)
 
@@ -54,6 +72,12 @@ class Reconciler:
         self.busy = busy
         self.version = version
         self._last_idle: Optional[str] = None
+        # Waits a moment on the service's Monitor; True when Kodi is
+        # stopping. The runner's, since the Monitor is its thread's.
+        self.give_way: Callable[[], bool] = lambda: False
+        self._gave_way = 0.0
+        # request id -> (hash, reason, when): what a handler refused.
+        self._refused: Dict[str, Tuple[str, str, float]] = {}
         # Whether the handlers' leftovers have been swept in this process.
         self._swept = False
         # kind -> (the database version tended, what was found): see _tend.
@@ -134,13 +158,29 @@ class Reconciler:
             if swept is not None:
                 report["swept"] = swept
                 self._swept = True
-        self._withdraw_stale(document, context, busy, outcomes)
+        if trigger in RECHECK_TRIGGERS:
+            self._refused.clear()
+        else:
+            self._refused = {
+                request_id: known
+                for request_id, known in self._refused.items()
+                if request_id in document.requests
+            }
+        stopping = self._withdraw_stale(document, context, busy, outcomes)
         # What a viewer is waiting on first; the rest in the document's order.
         for request in sorted(
             contract.list_requests(document), key=lambda r: not self._urgent(r.kind)
         ):
+            if stopping or self._pause():
+                stopping = True
+                break
             outcomes[request.id] = self._serve(request, context, busy)
         self.ledger.save()
+        if stopping:
+            # Kodi is on its way out: what was done is on record in the
+            # ledger, and the rest is the next start's.
+            LOG.info("reconcile left off: Kodi is stopping")
+            return report
         report["requests"] = outcomes
         report["summary"] = {
             state: sum(1 for o in outcomes.values() if o["state"] == state)
@@ -197,6 +237,16 @@ class Reconciler:
                 complete = False
         return swept if complete else None
 
+    def _pause(self) -> bool:
+        """Wait on the service's Monitor when the run has gone on for a
+        while (GIVE_WAY_EVERY); True when Kodi is stopping."""
+        now = time.monotonic()
+        if now - self._gave_way < GIVE_WAY_EVERY:
+            return False
+        stopping = bool(self.give_way())
+        self._gave_way = time.monotonic()
+        return stopping
+
     def _urgent(self, kind: str) -> bool:
         handler = self.handlers.get(kind)
         return handler is not None and handler.urgent
@@ -207,10 +257,14 @@ class Reconciler:
         context: Context,
         busy: bool,
         outcomes: Dict[str, Dict[str, str]],
-    ) -> None:
+    ) -> bool:
+        """Undo what the document no longer asks for; True when Kodi is
+        stopping and the run should end."""
         for request_id, entry in list(self.ledger.entries.items()):
             if request_id in document.requests:
                 continue
+            if self._pause():
+                return True
             handler = self.handlers.get(entry.kind)
             if handler is None:
                 LOG.warning(
@@ -227,6 +281,7 @@ class Reconciler:
             kept = self._withdraw(request_id, entry, handler, context)
             if kept is not None:
                 outcomes[request_id] = kept
+        return False
 
     def _withdraw(
         self, request_id: str, entry: Entry, handler: Handler, context: Context
@@ -275,6 +330,16 @@ class Reconciler:
                 )
                 return _outcome(WAITING, "confirmation failed", request.hash)
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
+        known = self._refused.get(request.id)
+        if (
+            entry is None
+            and known is not None
+            and known[0] == request.hash
+            and time.monotonic() - known[2] < REFUSED_RETRY
+        ):
+            # Refused as it stands, and not long ago: the answer is the
+            # same, and no database is opened to hear it again.
+            return _outcome(REFUSED, known[1], request.hash)
         if _deferred(handler, busy):
             return _outcome(WAITING, "scan", request.hash)
         if entry is not None and entry.hash != request.hash:
@@ -296,6 +361,7 @@ class Reconciler:
                 if kept is not None:
                     return dict(kept, hash=request.hash)
             LOG.info("refused %s (%s): %s", request.id, request.kind, error.reason)
+            self._refused[request.id] = (request.hash, error.reason, time.monotonic())
             return _outcome(REFUSED, error.reason, request.hash)
         except Retry as error:
             return _outcome(WAITING, error.reason, request.hash)

@@ -21,6 +21,9 @@ RETRY_SECONDS = 30.0
 # wait, and the wait then runs to its end: a second of it was up to a second
 # before a playing item's chapter images were looked at.
 WAKE_SLICE = 0.25
+# The wait a running reconcile makes on the Monitor between requests
+# (reconciler.GIVE_WAY_EVERY). A zero timeout is "for ever".
+GIVE_WAY_SECONDS = 0.001
 
 _SCAN_FINISHED = ("VideoLibrary.OnScanFinished", "AudioLibrary.OnScanFinished")
 
@@ -68,6 +71,9 @@ def run() -> None:
     LOG.info("--->>> companion %s", kodi.own_version())
     monitor = Monitor()
     worker = build()
+    # The Monitor is this thread's, and so is waiting on it: a run that goes
+    # on for long calls back here.
+    worker.give_way = lambda: monitor.waitForAbort(GIVE_WAY_SECONDS)
     trigger = "start"
     while not monitor.abortRequested():
         # Cleared before the run, not after it: a ping that arrives while

@@ -474,3 +474,84 @@ def test_leftovers_are_swept_once_at_the_first_wake_that_names_a_device(rig):
     kodi.scanning = False
     report = worker.run("start")
     assert "swept" not in report and len(swept) == 2
+
+
+def test_a_refusal_is_not_asked_of_the_database_again_on_every_wake(rig, monkeypatch):
+    """Kofin pings after every pass, and every ping served the whole
+    document again: 5,632 refused requests were 5,632 databases opened each
+    time, for the answer they had given the time before."""
+    _, handler, _, worker, publish, _, _, _ = rig
+    asked = []
+    handler.fail = Refused("0 audio stream(s) filed, 1 named")
+    apply = handler.apply
+    handler.apply = lambda request, context: (
+        asked.append(request.id),
+        apply(request, context),
+    )[1]
+    publish([{"id": "f1", "kind": "fake"}])
+    for trigger in ("ping", "ping", "timer"):
+        report = worker.run(trigger)
+        assert report["requests"]["f1"] == dict(
+            report["requests"]["f1"],
+            state="refused",
+            reason="0 audio stream(s) filed, 1 named",
+        )
+    assert asked == ["f1"]
+
+    # A scan may have filed the rows it was refused for; so may a setting.
+    for trigger in ("scan finished", "settings changed", "settings button"):
+        worker.run(trigger)
+    assert asked == ["f1"] * 4
+    # The request's content moved: it is another request.
+    publish([{"id": "f1", "kind": "fake", "plot": "new"}], generation=2)
+    worker.run("ping")
+    assert asked == ["f1"] * 5
+    # And in time it is asked again whatever happened.
+    monkeypatch.setattr(reconciler, "REFUSED_RETRY", 0.0)
+    worker.run("ping")
+    assert asked == ["f1"] * 6
+    # Served once the handler has an answer.
+    handler.fail = None
+    report = worker.run("ping")
+    assert report["requests"]["f1"]["state"] == "done"
+
+
+def test_a_long_run_waits_on_the_services_monitor_and_ends_when_kodi_stops(
+    rig, monkeypatch
+):
+    """A callback Kodi queued for this add-on's Monitor leaves the queue only
+    when its thread waits on it, and every Python thread in Kodi walks past
+    the ones that are left. A run of thousands of requests never waited."""
+    _, handler, ledger, worker, publish, status, _, _ = rig
+    monkeypatch.setattr(reconciler, "GIVE_WAY_EVERY", 0.0)
+    waits = []
+    worker.give_way = lambda: waits.append(len(handler.applied)) or False
+    publish([{"id": "f%d" % n, "kind": "fake"} for n in range(4)])
+    worker.run("ping")
+    # Before each request, with what had been applied by then.
+    assert waits == [0, 1, 2, 3] and len(handler.applied) == 4
+
+    # Kodi stops during the next run: it ends there, what it did is saved.
+    publish([{"id": "g%d" % n, "kind": "fake"} for n in range(4)], generation=2)
+    calls = []
+    worker.give_way = lambda: calls.append(1) or len(calls) > 2
+    published = status()
+    worker.run("ping")
+    assert len(calls) == 3
+    # Two of the four old requests were withdrawn before the stop.
+    assert len(handler.withdrawn) == 2 and len(handler.applied) == 4
+    saved = Ledger(ledger.path)
+    saved.load()
+    assert sorted(saved.entries) == ["f2", "f3"]
+    # No status is written by a run that did not finish.
+    assert status() == published
+
+
+def test_a_short_run_does_not_wait_at_all_between_requests(rig):
+    _, handler, _, worker, publish, _, _, _ = rig
+    waits = []
+    worker.give_way = lambda: waits.append(1) or False
+    publish([{"id": "f%d" % n, "kind": "fake"} for n in range(20)])
+    worker.run("ping")
+    # Once, at the start; twenty requests take less than GIVE_WAY_EVERY.
+    assert len(handler.applied) == 20 and len(waits) == 1
