@@ -27,6 +27,12 @@ def reset_overrides() -> None:
     _path_overrides.clear()
 
 
+def locked(error: sqlite3.Error) -> bool:
+    """Whether another connection held the file for longer than the wait."""
+    text = str(error).lower()
+    return "locked" in text or "busy" in text
+
+
 def resolve_path(kind: str) -> str:
     if kind in _path_overrides:
         return _path_overrides[kind]
@@ -38,11 +44,19 @@ def resolve_path(kind: str) -> str:
 class Database:
     """``with Database("video") as db: db.cursor.execute(...)``."""
 
-    timeout = 120
+    timeout: float = 120
 
-    def __init__(self, kind: str = "video", commit_close: bool = True) -> None:
+    def __init__(
+        self,
+        kind: str = "video",
+        commit_close: bool = True,
+        timeout: Optional[float] = None,
+    ) -> None:
         self.kind = kind
         self.commit_close = commit_close
+        if timeout is not None:
+            # How long a statement waits for a file another connection holds.
+            self.timeout = timeout
         self.path = ""
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: sqlite3.Cursor

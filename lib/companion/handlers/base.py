@@ -43,10 +43,9 @@ class Handler:
     family: str = ""
     # The database kinds the handler writes; each must pass the gate.
     needs: Tuple[str, ...] = ()
-    # A viewer is waiting on it: served before every other request of a run,
-    # and neither applied nor withdrawn later because a library scan is
-    # running. Only for a kind that writes none of the databases a scan
-    # writes.
+    # A viewer is waiting on it: served before every other request of a run.
+    # Order and nothing else: whether a request waits for a library scan is
+    # read off ``needs`` (``reconciler.SCANNED``), never off this flag.
     urgent: bool = False
 
     def apply(self, request: Request, context: Context) -> Dict[str, Any]:

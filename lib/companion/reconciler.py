@@ -17,6 +17,17 @@ WAITING = "waiting"
 REFUSED = "refused"
 
 
+# The databases a library scan writes. A request that needs one of them
+# is neither applied nor withdrawn while a scan runs or Kofin holds one; a
+# request that needs neither (the texture cache alone) is not held back, as
+# a sweep is not.
+SCANNED = frozenset(("video", "music"))
+
+
+def _deferred(handler: Handler, busy: bool) -> bool:
+    return busy and not SCANNED.isdisjoint(handler.needs)
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
@@ -208,7 +219,7 @@ class Reconciler:
                     entry.kind,
                 )
                 continue
-            if busy and not handler.urgent:
+            if _deferred(handler, busy):
                 outcomes[request_id] = _outcome(
                     WAITING, "withdrawal waits for the scan", entry.hash
                 )
@@ -256,13 +267,15 @@ class Reconciler:
             try:
                 if handler.confirm(request, entry, context):
                     return _outcome(DONE, "", request.hash)
+            except Retry as error:
+                return _outcome(WAITING, error.reason, request.hash)
             except Exception:
                 LOG.exception(
                     "confirmation of %s (%s) failed", request.id, request.kind
                 )
                 return _outcome(WAITING, "confirmation failed", request.hash)
             LOG.info("%s (%s) no longer holds; applied again", request.id, request.kind)
-        if busy and not handler.urgent:
+        if _deferred(handler, busy):
             return _outcome(WAITING, "scan", request.hash)
         if entry is not None and entry.hash != request.hash:
             # The request's content moved. What its earlier form wrote is

@@ -22,14 +22,16 @@ that differ by case alone are two rows and one file. A file is therefore
 removed only when no row names it any more.
 """
 
+import contextlib
 import os
 import shutil
-from typing import Any, Dict, List, Tuple
+import sqlite3
+from typing import Any, Dict, Iterator, List, Tuple
 
 from companion import kodi, schema
 from companion.contract import Request
-from companion.db import Database
-from companion.handlers.base import Context, Handler, Refused
+from companion.db import Database, locked
+from companion.handlers.base import Context, Handler, Refused, Retry
 from companion.kodidb.texture import (
     TextureCache,
     cached_rel_path,
@@ -49,6 +51,24 @@ def thumbnails_dir() -> str:
     return kodi.translate(THUMBNAILS)
 
 
+# How long a statement waits for the texture database. Kodi's image cache
+# holds it for a row at a time; whatever holds it longer is not waited out
+# on the thread that serves every other request and hears the abort. The
+# request is waiting then, and tried again at the next wake.
+BUSY_WAIT = 5.0
+
+
+@contextlib.contextmanager
+def _textures(commit_close: bool = True) -> Iterator[Database]:
+    try:
+        with Database("texture", commit_close, BUSY_WAIT) as db:
+            yield db
+    except sqlite3.OperationalError as error:
+        if locked(error):
+            raise Retry("texture database busy") from error
+        raise
+
+
 class ChapterArt(Handler):
     kind = "chapter_art"
     family = "chapterArt"
@@ -58,8 +78,9 @@ class ChapterArt(Handler):
     # closed and opened again. The request used to be served after every
     # standing request of the pass, each one a database opened to confirm
     # it, and not at all while a scan ran: thirty seconds later, or when
-    # the scan ended. It writes the texture database and Thumbnails/, which
-    # Kodi's image cache writes at any moment, scan or no scan.
+    # the scan ended. It is first because of ``urgent``; it is not held back
+    # by a scan because it needs the texture database and Thumbnails/ alone,
+    # which Kodi's image cache writes at any moment, scan or no scan.
     urgent = True
 
     def apply(self, request: Request, context: Context) -> Dict[str, Any]:
@@ -109,7 +130,7 @@ class ChapterArt(Handler):
                 raise Refused("no chapter image could be read")
             # The row is the publish step: after its file, and all of them in
             # one transaction that holds the database no longer than it takes.
-            with Database("texture") as db:
+            with _textures() as db:
                 cache = TextureCache(db.cursor)
                 for key, rel, width, height in tiles:
                     cache.add(key, rel, width, height)
@@ -126,7 +147,7 @@ class ChapterArt(Handler):
     def withdraw(self, entry: Entry, context: Context) -> None:
         keys = entry.data.get("keys") or []
         directory = thumbnails_dir()
-        with Database("texture") as db:
+        with _textures() as db:
             cache = TextureCache(db.cursor)
             for key, rel in keys:
                 cache.remove(key)
@@ -138,7 +159,7 @@ class ChapterArt(Handler):
 
     def confirm(self, request: Request, entry: Entry, context: Context) -> bool:
         directory = thumbnails_dir()
-        with Database("texture", commit_close=False) as db:
+        with _textures(commit_close=False) as db:
             cache = TextureCache(db.cursor)
             for key, rel in entry.data.get("keys") or []:
                 if cache.get(key) != rel or not os.path.isfile(
@@ -165,7 +186,7 @@ class ChapterArt(Handler):
             return dynpath_device(key_dynpath(url)) == device
 
         removed: List[Tuple[str, str]] = []
-        with Database("texture") as db:
+        with _textures() as db:
             cache = TextureCache(db.cursor)
             for pattern in ("chapter://%", "image://video@%"):
                 removed.extend(cache.remove_like(pattern, keep=known, only=ours))

@@ -9,7 +9,8 @@ import pytest
 
 from companion import schema
 from companion.contract import Request, content_hash
-from companion.handlers.base import Context, Refused
+from companion.handlers import chapter_art
+from companion.handlers.base import Context, Refused, Retry
 from companion.handlers.chapter_art import ChapterArt
 from companion.kodidb.texture import (
     TextureCache,
@@ -205,6 +206,35 @@ def test_the_tiles_are_seeded_confirmed_and_removed(rig):
     handler.withdraw(entry, context)  # nothing left, nothing raised
 
 
+def test_a_texture_database_held_by_another_is_not_waited_out(rig, monkeypatch):
+    """The thread that serves chapter art serves everything else and hears
+    the abort; the wait was the database wrapper's 120 seconds."""
+    profile, files = rig
+    monkeypatch.setattr(chapter_art, "BUSY_WAIT", 0.05)
+    handler = ChapterArt()
+    context = Context("ns", DEVICE, GATE)
+    request = _request(files)
+    data = handler.apply(request, context)
+    entry = Entry("chapter_art", request.hash, data, "t")
+    db_path = str(profile / "Database" / "Textures14.db")
+    holder = sqlite3.connect(db_path)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(Retry, match="texture database busy"):
+            handler.withdraw(entry, context)
+        os.remove(profile / "Thumbnails" / data["keys"][0][1])
+        with pytest.raises(Retry, match="texture database busy"):
+            handler.apply(request, context)
+        # The file the failed write copied is not left without its row.
+        assert not (profile / "Thumbnails" / data["keys"][0][1]).exists()
+    finally:
+        holder.rollback()
+        holder.close()
+    assert len(handler.apply(request, context)["keys"]) == 3
+    handler.withdraw(entry, context)
+    assert _query(db_path, "SELECT COUNT(*) FROM texture")[0][0] == 0
+
+
 def test_refusals(rig):
     profile, files = rig
     handler = ChapterArt()
@@ -277,7 +307,7 @@ def test_a_call_that_does_not_commit_takes_its_copies_with_it(rig, monkeypatch):
         real_add(self, url, cachedurl, width, height)
 
     monkeypatch.setattr(TextureCache, "add", failing_add)
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(Retry):
         handler.apply(_request(files), context)
     assert _thumbnails(profile) == kept
     assert [u for (u,) in _query(db_path, "SELECT url FROM texture")] == [
@@ -442,3 +472,6 @@ def test_the_registry_serves_the_kind():
 
     handler = registry()["chapter_art"]
     assert handler.family == "chapterArt" and handler.needs == ("texture",)
+    # First of a run, and by its needs never held back by a scan.
+    assert handler.urgent
+    assert [k for k, h in registry().items() if h.urgent] == ["chapter_art"]
