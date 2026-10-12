@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<addon id="service.kofin.companion" name="Kofin Companion" version="0.1.0" provider-name="kontell">
+<addon id="service.kofin.companion" name="Kofin Companion" version="0.1.1" provider-name="kontell">
   <requires>
     <!-- Nothing else is declared on purpose: plugin.video.kofin is the same
          add-on id for the SQL build (main), which writes these rows itself,
