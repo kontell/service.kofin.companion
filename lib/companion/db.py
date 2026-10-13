@@ -83,7 +83,11 @@ class Database:
         assert conn is not None
         try:
             if exc_type is not None:
-                LOG.error("type: %s value: %s", exc_type, exc_val)
+                # A handler's refusal leaves through here like any exception,
+                # once per refused request per run: thousands of error lines
+                # for answers that were never faults.
+                say = LOG.debug if getattr(exc_type, "expected", False) else LOG.error
+                say("type: %s value: %s", exc_type, exc_val)
                 conn.rollback()
             elif self.commit_close and (conn.total_changes or conn.in_transaction):
                 LOG.debug("[%s] %s rows updated.", self.kind, conn.total_changes)

@@ -47,3 +47,31 @@ def test_a_block_commits_and_closes(tmp_path):
         check.close()
     finally:
         db.reset_overrides()
+
+
+def test_a_refusal_leaving_a_block_is_not_logged_as_an_error(tmp_path, monkeypatch):
+    """A handler's refusal is an answer. Each one left its database block as
+    an exception and was logged as an error: two error lines a request, for
+    thousands of requests a run."""
+    from companion.handlers.base import Refused, Retry
+    from tests.unit import kodifixtures
+
+    path = str(tmp_path / "MyVideos149.db")
+    kodifixtures.create_video_db(path)
+    db.set_path_override("video", path)
+    errors, quiet = [], []
+    monkeypatch.setattr(db.LOG, "error", lambda *args: errors.append(args))
+    monkeypatch.setattr(db.LOG, "debug", lambda *args: quiet.append(args))
+    try:
+        for answer in (Refused("row is gone"), Retry("busy")):
+            with pytest.raises(type(answer)):
+                with db.Database("video"):
+                    raise answer
+        assert errors == []
+        assert sum(1 for args in quiet if args[0].startswith("type:")) == 2
+        with pytest.raises(ValueError):
+            with db.Database("video"):
+                raise ValueError("a fault")
+        assert len(errors) == 1
+    finally:
+        db.reset_overrides()

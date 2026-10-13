@@ -118,3 +118,41 @@ def test_a_ping_that_arrives_in_the_wait_is_acted_on_within_a_quarter_second(
     runner.run()
     assert events == ["start", "ping"]
     assert slices == [runner.WAKE_SLICE] * 3 and runner.WAKE_SLICE <= 0.25
+
+
+def test_a_running_reconcile_waits_on_the_runners_monitor(monkeypatch):
+    """The Monitor is the runner thread's, so the wait a long run makes
+    between requests is handed to the worker from here."""
+    import threading
+
+    waited = []
+
+    class FakeMonitor:
+        def __init__(self):
+            self.wake = threading.Event()
+            self.trigger = "timer"
+            self.runs = 0
+
+        def abortRequested(self):
+            return self.runs >= 1
+
+        def waitForAbort(self, seconds):
+            waited.append(seconds)
+            return False
+
+    monitor = FakeMonitor()
+
+    class Worker:
+        give_way = None
+
+        def run(self, trigger):
+            monitor.runs += 1
+            assert self.give_way() is False
+            return {}
+
+    monkeypatch.setattr(runner, "Monitor", lambda: monitor)
+    monkeypatch.setattr(runner, "build", lambda: Worker())
+    monkeypatch.setattr(runner, "POLL_SECONDS", 0.0)
+    runner.run()
+    # A real wait, never the zero that means "for ever".
+    assert waited[0] == runner.GIVE_WAY_SECONDS and waited[0] > 0
