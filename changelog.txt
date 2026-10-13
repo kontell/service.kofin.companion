@@ -1,3 +1,6 @@
+v0.1.2
+- A large library removal no longer stalls Kodi's other add-ons.
+
 v0.1.1
 - Chapter images appear sooner, and are no longer held back by a library scan.
 
